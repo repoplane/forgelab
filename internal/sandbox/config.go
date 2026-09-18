@@ -8,6 +8,8 @@ import (
 	"regexp"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/repoplane/forgelab/internal/forge/github"
 )
 
 // ConfigFile is the default name of the sandbox configuration inside a fleet directory.
@@ -66,6 +68,9 @@ func (c *Config) Sandbox(name string) (Sandbox, error) {
 	sb.Name = name
 	if sb.MarkerTopic == "" {
 		sb.MarkerTopic = DefaultMarkerTopic
+	}
+	if sb.Forge == "github" && sb.BaseURL == "" {
+		sb.BaseURL = github.DefaultBaseURL // only Enterprise Server needs to say otherwise
 	}
 	if sb.Forge == "" || sb.BaseURL == "" || sb.Org == "" || sb.TokenEnv == "" {
 		return Sandbox{}, fmt.Errorf("sandbox %q: forge, base_url, org and token_env are required", name)

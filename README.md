@@ -30,7 +30,7 @@ to be there.**
 
 | | Forgejo | GitHub | GitLab |
 |---|:---:|:---:|:---:|
-| Supported | ✅ | 🔜 | 🔜 |
+| Supported | ✅ | 🧪 beta | 🔜 |
 
 ## ⚡ What it looks like
 
@@ -149,6 +149,21 @@ sandboxes:
     token_env: FORGELAB_LOCAL_TOKEN     # the NAME of a variable, never a secret
 ```
 
+A GitHub sandbox needs no `base_url` (set it only for Enterprise Server):
+
+```yaml
+  gh:
+    forge: github
+    org: your-sandbox-org               # must match org_allowlist
+    token_env: FORGELAB_GH_TOKEN
+```
+
+The token needs to create, push to, configure and delete repositories in that org: a classic PAT
+with `repo` and `delete_repo`, or a fine-grained one scoped to the org with *Administration*,
+*Contents* and *Pull requests* read/write. Add `workflow` only if a fixture carries
+`.github/workflows/`. Use an org that holds nothing else you care about, and remember that a
+`visibility: public` fixture really is public there.
+
 [`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories, each a shape that
 forge integrations trip on.
 
@@ -161,7 +176,7 @@ forge integrations trip on.
 | `tagged` | carries tags `v1` and `v2` |
 | `scaffold` | a README and nothing else |
 | `public` | the one public repository |
-| `with-workflow` | content under a dot-directory |
+| `dotfiles` | everything under dot-prefixed paths |
 | `billing-api` · `ledger-worker` · `node-gateway` · `parser-svc` | plain services, with topics |
 
 Twelve is chosen for its divisors: list the fleet with a page size of 12, 6, 5, 4, 3 or 1 and you

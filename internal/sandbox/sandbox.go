@@ -20,6 +20,7 @@ import (
 	"github.com/repoplane/forgelab/internal/fleet"
 	"github.com/repoplane/forgelab/internal/forge"
 	"github.com/repoplane/forgelab/internal/forge/forgejo"
+	"github.com/repoplane/forgelab/internal/forge/github"
 )
 
 // GuardError means forgelab refused to act: wrong place, missing repository, stale lock.
@@ -95,8 +96,12 @@ func Open(o Options) (*Env, error) {
 	switch sb.Forge {
 	case "forgejo":
 		f = forgejo.New(sb.BaseURL, sb.Org, token, o.HTTPClient)
+	case "github":
+		if f, err = github.New(sb.BaseURL, sb.Org, token, o.HTTPClient); err != nil {
+			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
+		}
 	default:
-		return nil, fmt.Errorf("sandbox %q: forge %q is not supported yet (forgejo is)", sb.Name, sb.Forge)
+		return nil, fmt.Errorf("sandbox %q: forge %q is not supported (forgejo and github are)", sb.Name, sb.Forge)
 	}
 
 	return &Env{
