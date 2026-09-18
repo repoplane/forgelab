@@ -1,4 +1,4 @@
-# forgelab
+# ForgeLab
 
 [![CI](https://github.com/repoplane/forgelab/actions/workflows/ci.yml/badge.svg)](https://github.com/repoplane/forgelab/actions/workflows/ci.yml)
 
@@ -10,7 +10,7 @@ third option: a real forge, plus a committed record of exactly what is supposed 
 
 Forgejo is supported today. GitHub and GitLab are next.
 
-```console
+```sh
 forgelab plan    --sandbox local    # what apply would create (+) or update (~); no writes
 forgelab apply   --sandbox local    # create, seed, configure; writes fleet.lock.json
 forgelab verify  --sandbox local    # exit 0 ok · 1 drift · 2 guard failure
@@ -22,7 +22,7 @@ forgelab destroy --sandbox local    # delete the declared repos, nothing else
 
 Needs Go, git and Docker.
 
-```console
+```sh
 make up                                # a local Forgejo on :3000; prints a token
 export FORGELAB_LOCAL_TOKEN=…
 go run ./cmd/forgelab apply  --sandbox local --fleet examples/fleet
@@ -78,7 +78,7 @@ and an `empty` repo that was pushed to (delete it on the forge, then `apply`).
 
 ## Development
 
-```console
+```sh
 make unit     # no Docker
 make test     # end-to-end against a throwaway Forgejo container
 ```
