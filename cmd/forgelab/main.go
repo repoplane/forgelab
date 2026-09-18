@@ -13,6 +13,9 @@ import (
 	"github.com/repoplane/forgelab/internal/sandbox"
 )
 
+// version is stamped by the release build (-ldflags "-X main.version=v1.2.3").
+var version = "dev"
+
 const usage = `forgelab — deterministic repository fleets on a sandbox org
 
 Usage:
@@ -24,6 +27,7 @@ Commands:
   verify    assert the sandbox matches the lock    exit 0 ok · 1 drift · 2 guard failure
   reset     put drifted repositories back to baseline; never creates or deletes one
   destroy   delete the declared repositories, and nothing else
+  version   print the version
 
 Flags:
 `
@@ -48,6 +52,10 @@ func run(args []string) int {
 		return 2
 	}
 	command := args[0]
+	if command == "version" || command == "--version" {
+		fmt.Println("forgelab", version)
+		return 0
+	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}

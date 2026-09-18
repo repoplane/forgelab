@@ -27,3 +27,11 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionNeedsNoSandbox(t *testing.T) {
+	for _, arg := range []string{"version", "--version"} {
+		if code := run([]string{arg}); code != 0 {
+			t.Errorf("run(%s) = %d, want 0", arg, code)
+		}
+	}
+}

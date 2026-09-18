@@ -1,0 +1,30 @@
+name: Release
+
+# Pushing a tag is the release:  git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Never publish what does not pass.
+      - run: make ci
+
+      - run: make dist VERSION="$TAG"
+
+      - run: gh release create "$TAG" dist/* --verify-tag --generate-notes

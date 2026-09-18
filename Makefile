@@ -3,7 +3,16 @@ ADMIN := labadmin
 PASS  := labadmin-not-a-secret
 URL   := http://localhost:3000
 
-.PHONY: help build lint test unit ci up down
+# A release passes VERSION=<tag>; a local build describes the checkout it came from.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X main.version=$(VERSION)
+
+# <GOOS>/<GOARCH>/<name>. The name is what `uname -s`_`uname -m` prints on that platform, so
+# the install one-liner in the README can build the asset URL with no script in between.
+PLATFORMS := linux/amd64/Linux_x86_64 linux/arm64/Linux_aarch64 \
+             darwin/amd64/Darwin_x86_64 darwin/arm64/Darwin_arm64
+
+.PHONY: help build dist lint test unit ci up down
 
 ## Show this help
 help:
@@ -14,7 +23,21 @@ help:
 
 ## Build ./bin/forgelab
 build:
-	go build -o bin/forgelab ./cmd/forgelab
+	go build -ldflags "$(LDFLAGS)" -o bin/forgelab ./cmd/forgelab
+
+## Cross-compile release archives and checksums into ./dist
+dist:
+	@rm -rf dist && mkdir -p dist
+	@for p in $(PLATFORMS); do \
+		IFS=/ read -r os arch name <<< "$$p"; \
+		echo "  forgelab_$$name.tar.gz"; \
+		mkdir -p dist/$$name && cp LICENSE dist/$$name/ && \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+			-o dist/$$name/forgelab ./cmd/forgelab && \
+		tar -czf dist/forgelab_$$name.tar.gz -C dist/$$name forgelab LICENSE && \
+		rm -rf dist/$$name || exit 1; \
+	done
+	@cd dist && (sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz) > checksums.txt
 
 ## Check formatting and run go vet
 lint:
