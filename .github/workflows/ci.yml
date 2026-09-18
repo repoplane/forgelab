@@ -23,13 +23,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: gofmt
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-
-      - name: go vet
-        run: go vet ./...
+      # The same targets a developer runs, so CI and a laptop cannot drift apart.
+      - run: make lint
 
       # Includes the end-to-end suite: it boots a throwaway Forgejo container through
       # testcontainers, which the runner's Docker daemon supports out of the box.
-      - name: go test
-        run: go test -count=1 ./...
+      - run: make test

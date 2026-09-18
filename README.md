@@ -81,4 +81,5 @@ and an `empty` repo that was pushed to (delete it on the forge, then `apply`).
 ```sh
 make unit     # no Docker
 make test     # end-to-end against a throwaway Forgejo container
+make ci       # exactly what CI runs: lint, then test
 ```

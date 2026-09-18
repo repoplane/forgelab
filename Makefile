@@ -3,7 +3,7 @@ ADMIN := labadmin
 PASS  := labadmin-not-a-secret
 URL   := http://localhost:3000
 
-.PHONY: help build test unit up down
+.PHONY: help build lint test unit ci up down
 
 ## Show this help
 help:
@@ -16,6 +16,11 @@ help:
 build:
 	go build -o bin/forgelab ./cmd/forgelab
 
+## Check formatting and run go vet
+lint:
+	@out=$$(gofmt -l .); test -z "$$out" || { echo "not gofmt-clean:"; echo "$$out"; exit 1; }
+	go vet ./...
+
 # -count=1 defeats Go's test cache: the suite boots a container and talks to Docker, so a
 # cached "ok" would report success for a run that never happened.
 ## Run every test, including the end-to-end suite (needs Docker)
@@ -25,6 +30,10 @@ test:
 ## Run the tests that need no Docker
 unit:
 	go test -count=1 -short ./...
+
+# The workflow calls the same targets, so a green `make ci` here means a green run there.
+## Everything CI runs: lint, then test
+ci: lint test
 
 # A token's secret is only revealed once, so a name left over from an earlier `make up`
 # against the same instance is deleted before it is minted again.
