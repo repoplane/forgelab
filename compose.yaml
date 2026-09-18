@@ -1,0 +1,31 @@
+# A local Forgejo to point forgelab at: pinned by digest, on a fixed port so ROOT_URL is
+# correct and the web UI is browsable.
+#
+#   make up    →  boots it, creates the admin, prints `export FORGELAB_LOCAL_TOKEN=…`
+#
+# The Go tests do the same thing through testcontainers on a random port.
+services:
+  forgejo:
+    # Forgejo 15.0.8 (LTS) — keep in step with internal/itest/forgejo_test.go
+    image: codeberg.org/forgejo/forgejo@sha256:0a2e377fd3c5af3451bfa1f44e6f198f322b6d5e03f04a028b8e672f1ccddc9f
+    container_name: forgelab-forgejo
+    ports:
+      - "3000:3000"
+    environment:
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__security__SECRET_KEY: forgelab-local-not-a-secret
+      FORGEJO__server__ROOT_URL: http://localhost:3000/
+      FORGEJO__repository__DEFAULT_BRANCH: main
+      FORGEJO__indexer__REPO_INDEXER_ENABLED: "false"
+      FORGEJO__actions__ENABLED: "false"
+      FORGEJO__cron__ENABLED: "false"
+      FORGEJO__mailer__ENABLED: "false"
+      FORGEJO__log__LEVEL: warn
+      FORGEJO__server__OFFLINE_MODE: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/healthz"]
+      interval: 1s
+      timeout: 3s
+      retries: 60

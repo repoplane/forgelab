@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "fleet_digest": "sha256:4c55f16a05ff5d1aed83db26aff7dad6729494004288573bb47ba1b8fe32196a",
+  "repos": [
+    {
+      "name": "archived",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "retired"
+      ],
+      "archived": true,
+      "empty": false,
+      "baseline": "6a81c541ddbc698923efa49704968247b69dfb2e"
+    },
+    {
+      "name": "billing-api",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "node",
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "b8a1a303d868e0bc2ed18bc8a39aaeb6fe8c5147"
+    },
+    {
+      "name": "compliant",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "bb39569c2c7ba8a3a244a5926ac35a5fa3b81156"
+    },
+    {
+      "name": "ledger-worker",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "rust",
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "f58e220025ad921bdf36c0ee15582bf99a66d5f4"
+    },
+    {
+      "name": "master-branch",
+      "default_branch": "master",
+      "visibility": "private",
+      "topics": [
+        "legacy"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "841526d4bd7346b1eab08f010dd62ff154234504"
+    },
+    {
+      "name": "no-commits",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": true,
+      "baseline": ""
+    },
+    {
+      "name": "node-gateway",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "gateway",
+        "node",
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "55531259205d9d3bc2fe7307d4f00ef604b81f62"
+    },
+    {
+      "name": "parser-svc",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "70db57b72fefb2a8fa929a63c5529d91f2f5797c"
+    },
+    {
+      "name": "public",
+      "default_branch": "main",
+      "visibility": "public",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "3fd9e04da20d6916e0a23bd2741a53950f66af81"
+    },
+    {
+      "name": "scaffold",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "bbb40bd73d1de8c5995192cb7f973a0ddf7217d8"
+    },
+    {
+      "name": "tagged",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "template"
+      ],
+      "archived": false,
+      "empty": false,
+      "tags": [
+        "v1",
+        "v2"
+      ],
+      "baseline": "a49bb7b288aec3c585df4766ae751fdbdcfaf0eb"
+    },
+    {
+      "name": "with-workflow",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "307a5b7a0f2943c8aeac5741bafad747f0043c62"
+    }
+  ]
+}

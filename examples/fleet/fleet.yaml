@@ -1,0 +1,52 @@
+# An example fleet: twelve tiny repositories, each one shape a forge integration trips on.
+#
+# The directory tree under repos/ IS the fleet: repos/<name>/ is a repository, so adding
+# one needs no entry here. This file carries only what a directory cannot express, and
+# every field is optional.
+#
+# Twelve is chosen for its divisors: listing the fleet with a page size of 12, 6, 5, 4, 3
+# or 1 gives an exact single page, exact multiples, a short tail and a deep cursor chain.
+
+version: 1
+
+git:
+  # Pinned identity and clock. Same inputs => same commit SHAs, on every machine.
+  author:
+    name: Forgelab Fixture
+    email: fixture@forgelab.test
+  timestamp: "2026-01-01T00:00:00Z"
+
+defaults:
+  visibility: private
+  default_branch: main
+
+repos:
+  master-branch:
+    default_branch: master
+    topics: [legacy]
+
+  archived:
+    archived: true          # applied last; an archived repository rejects every write
+    topics: [retired]
+
+  no-commits:
+    empty: true             # created, never pushed to. Read-only to tests: it cannot be reset
+
+  tagged:
+    tags: [v1, v2]
+    topics: [template]
+
+  public:
+    visibility: public
+
+  billing-api:
+    topics: [service, node]
+
+  ledger-worker:
+    topics: [service, rust]
+
+  node-gateway:
+    topics: [service, node, gateway]
+
+  parser-svc:
+    topics: [service]

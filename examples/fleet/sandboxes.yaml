@@ -1,0 +1,12 @@
+version: 1
+
+# Every org on a non-loopback forge must match this. Choose it so that it CANNOT match the
+# organisation holding your real code.
+org_allowlist: '^forgelab-sandbox'
+
+sandboxes:
+  local:
+    forge: forgejo
+    base_url: http://localhost:3000       # loopback: exempt from the allowlist
+    org: forgelab-sandbox
+    token_env: FORGELAB_LOCAL_TOKEN       # the NAME of a variable; `make up` prints the export
