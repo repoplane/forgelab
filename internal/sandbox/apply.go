@@ -53,10 +53,9 @@ func (e *Env) Apply(ctx context.Context) error {
 		}
 	}
 	e.printPlan("APPLY", changes)
+	// No prompt: apply never deletes, touches only declared repositories that carry the
+	// marker, and has just printed exactly what it is about to do.
 	if len(todo) > 0 {
-		if err := e.confirm(); err != nil {
-			return err
-		}
 		if err := e.Forge.EnsureOrg(ctx); err != nil {
 			return fmt.Errorf("org %s: %w", e.Sandbox.Org, err)
 		}

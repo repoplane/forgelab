@@ -40,7 +40,7 @@ func run(args []string) int {
 	fs.StringVar(&o.Sandbox, "sandbox", "", "sandbox name from the config (required)")
 	fs.StringVar(&o.FleetDir, "fleet", ".", "fleet directory: fleet.yaml, repos/, fleet.lock.json")
 	fs.StringVar(&o.ConfigPath, "config", "", "sandbox config (default <fleet>/sandboxes.yaml)")
-	fs.BoolVar(&o.Yes, "yes", false, "skip the confirmation prompt")
+	fs.BoolVar(&o.Yes, "yes", false, "skip the destroy confirmation")
 	fs.BoolVar(&o.Verbose, "v", false, "verbose output")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, usage)

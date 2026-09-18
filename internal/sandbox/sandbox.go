@@ -38,7 +38,7 @@ type Options struct {
 	FleetDir   string // directory holding fleet.yaml, repos/ and fleet.lock.json
 	ConfigPath string // default: <FleetDir>/sandboxes.yaml
 	Sandbox    string
-	Yes        bool // skip confirmation prompts
+	Yes        bool // skip the destroy confirmation
 	Verbose    bool
 
 	In  io.Reader // default os.Stdin
@@ -144,17 +144,19 @@ func (e *Env) loadLock() (*fleet.Lock, error) {
 	return lock, nil
 }
 
-// confirm makes the operator type the sandbox name. The guards cannot tell one sandbox
-// from another -- every sandbox passes them by design -- so the value that can be wrong is
-// the one that has to be typed. "yes" is muscle memory.
+// confirm asks before destroy, the one command that deletes. --yes skips it.
+//
+// Deliberately a plain y/N: with one sandbox there is nothing to mistake it for. Typing the
+// sandbox name earns its keep once two cloud sandboxes exist on the same forge -- and then
+// the prompt must not print the expected answer.
 func (e *Env) confirm() error {
 	if e.yes {
 		return nil
 	}
-	e.printf("\n  Type the sandbox name (%q, not the org) to confirm: ", e.Sandbox.Name)
+	e.printf("\n  Delete them? [y/N] ")
 	line, _ := bufio.NewReader(e.in).ReadString('\n')
-	if got := strings.TrimSpace(line); got != e.Sandbox.Name {
-		return fmt.Errorf("not confirmed: got %q, want the sandbox name %q; nothing was changed", got, e.Sandbox.Name)
+	if got := strings.ToLower(strings.TrimSpace(line)); got != "y" && got != "yes" {
+		return fmt.Errorf("not confirmed; nothing was changed")
 	}
 	return nil
 }

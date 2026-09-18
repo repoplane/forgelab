@@ -185,7 +185,7 @@ something to helpfully put back.
 
 **🔒 Safe by construction.** A non-loopback org must match `org_allowlist`. Every repo ForgeLab
 creates carries a marker topic; a same-named repo without it is never adopted, reset or deleted.
-`apply` and `destroy` make you type the sandbox name. Tokens are read from an environment variable
+`destroy` asks before deleting (`--yes` skips it). Tokens are read from an environment variable
 named in `sandboxes.yaml` — never from a file or a flag.
 
 ### Exit codes
