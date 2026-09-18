@@ -1,24 +1,111 @@
-# ForgeLab
+<h1 align="center">🧪 ForgeLab</h1>
 
-[![CI](https://github.com/repoplane/forgelab/actions/workflows/ci.yml/badge.svg)](https://github.com/repoplane/forgelab/actions/workflows/ci.yml)
+<p align="center">
+  <strong>Put a known set of repositories into a sandbox org. Run tests. Put them back, fast.</strong>
+</p>
 
-**Put a known set of repositories into a sandbox org. Run tests. Put them back, fast.**
+<p align="center">
+  <a href="https://github.com/repoplane/forgelab/actions/workflows/ci.yml"><img src="https://github.com/repoplane/forgelab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/repoplane/forgelab/releases/latest"><img src="https://img.shields.io/github/v/release/repoplane/forgelab?sort=semver" alt="Release"></a>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/repoplane/forgelab" alt="Go version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
-Testing a forge integration against a mock proves only that your parser agrees with your own
-assumptions. Testing against a live organisation is real, but not reproducible. forgelab is the
-third option: a real forge, plus a committed record of exactly what is supposed to be there.
+<p align="center">
+  <a href="#-install">Install</a> &bull;
+  <a href="#-try-it-in-two-minutes">Try it</a> &bull;
+  <a href="#-a-fleet">A fleet</a> &bull;
+  <a href="#-how-it-behaves">How it behaves</a> &bull;
+  <a href="examples/fleet">Example</a>
+</p>
 
-Forgejo is supported today. GitHub and GitLab are next.
+---
 
-```sh
-forgelab plan    --sandbox local    # what apply would create (+) or update (~); no writes
-forgelab apply   --sandbox local    # create, seed, configure; writes fleet.lock.json
-forgelab verify  --sandbox local    # exit 0 ok · 1 drift · 2 guard failure
-forgelab reset   --sandbox local    # back to baseline in under a second
-forgelab destroy --sandbox local    # delete the declared repos, nothing else
+Testing a forge integration has two bad options. A **mock** proves only that your parser agrees
+with your own assumptions. A **live organisation** is real, but not reproducible — it drifts
+under you between runs.
+
+ForgeLab is the third option: **a real forge, plus a committed record of exactly what is supposed
+to be there.**
+
+| | Forgejo | GitHub | GitLab |
+|---|:---:|:---:|:---:|
+| Supported | ✅ | 🔜 | 🔜 |
+
+## ⚡ What it looks like
+
+A test run opened a pull request, pushed straight to `main`, left a tag behind and edited some
+topics. `verify` names every bit of it; `reset` puts it back in half a second:
+
+```console
+$ forgelab verify --sandbox local
+forgelab: drift (run `forgelab reset --sandbox local`):
+  archived: archived is false, want true
+  billing-api: extra branch feature/run-42; 1 open request(s)
+  compliant: extra tag stray; main is at 9478ed52d4cf, want bb39569c2c7b
+  parser-svc: topics are [changed], want [service]
+$ echo $?
+1
+
+$ forgelab reset --sandbox local
+reset parser-svc (topics are [changed], want [service])
+reset archived (archived is false, want true)
+reset billing-api (extra branch feature/run-42; 1 open request(s))
+reset compliant (extra tag stray; main is at 9478ed52d4cf, want bb39569c2c7b)
+ok: 4 of 12 repositories reset
+
+$ forgelab verify --sandbox local
+ok: 12 repositories match fleet.lock.json
 ```
 
-## Try it
+Creating repositories is expensive and rare; putting them back is cheap and constant. So the
+commands are split along that line:
+
+```mermaid
+flowchart LR
+    F["📁 fleet.yaml<br/>repos/"] -->|"apply · when the fleet changes"| S[("🏢 sandbox org")]
+    S --> V{"verify"}
+    V -->|"0 · ok"| T["🧪 run your tests"]
+    T --> R["reset · every run"]
+    V -->|"1 · drift"| R
+    R --> V
+    V -->|"2 · guard failure"| H["🛑 stop, look"]
+```
+
+| Command | What it does | Writes? |
+|---|---|---|
+| `forgelab plan` | show what `apply` would create (`+`) or update (`~`) | nothing |
+| `forgelab apply` | create, seed and configure the declared repos; write `fleet.lock.json` | creates · updates |
+| `forgelab verify` | assert the sandbox matches the lock | nothing |
+| `forgelab reset` | put drifted repos back to baseline | drifted repos only |
+| `forgelab destroy` | delete the declared repos, and nothing else | deletes |
+
+Every command takes `--sandbox <name>`, plus `--fleet <dir>` (default `.`), `--config <file>`,
+`--yes` and `-v`.
+
+## 📦 Install
+
+A prebuilt binary, for Linux and macOS on x86_64 and arm64:
+
+```sh
+curl -fsSL "https://github.com/repoplane/forgelab/releases/latest/download/forgelab_$(uname -s)_$(uname -m).tar.gz" \
+  | sudo tar -xz -C /usr/local/bin forgelab
+forgelab version
+```
+
+> [!TIP]
+> In CI, pin a version: replace `latest/download` with `download/v0.1.0`. Every release carries a
+> `checksums.txt` (SHA-256) next to the archives.
+
+Or build it from source with Go:
+
+```sh
+go install github.com/repoplane/forgelab/cmd/forgelab@latest
+```
+
+ForgeLab needs `git` on the `PATH` at run time.
+
+## 🚀 Try it in two minutes
 
 Needs Go, git and Docker.
 
@@ -33,53 +120,117 @@ go run ./cmd/forgelab reset  --sandbox local --fleet examples/fleet
 make down
 ```
 
-## A fleet
+Log in as `labadmin` / `labadmin-not-a-secret` to see the private repositories.
+
+## 📁 A fleet
 
 ```text
 my-fleet/
-  fleet.yaml          pinned git identity, defaults, per-repo overrides
-  repos/<name>/       one directory per repository — the listing IS the fleet
-  sandboxes.yaml      where to apply it
-  fleet.lock.json     resolved settings + baseline commit SHAs; written by apply; commit it
+├── fleet.yaml          pinned git identity, defaults, per-repo overrides
+├── repos/
+│   └── <name>/         one directory per repository — the listing IS the fleet
+├── sandboxes.yaml      where to apply it
+└── fleet.lock.json     resolved settings + baseline commit SHAs; written by apply; commit it
 ```
 
-See [`examples/fleet`](examples/fleet) for a working one: twelve tiny repositories, each a shape
-that forge integrations trip on — a `master` default branch, an archived repo, one with no
-commits, tags, a public one, a dot-directory.
+`fleet.yaml` carries only what a directory cannot say. Every field is optional:
 
-Per-repo fields in `fleet.yaml`, all optional: `default_branch`, `visibility` (`private` |
-`public`), `topics`, `archived`, `empty`, `tags`.
+```yaml
+version: 1
+git:
+  author: {name: "Forgelab Fixture", email: "fixture@forgelab.test"}
+  timestamp: "2026-01-01T00:00:00Z"     # pinned clock => identical SHAs everywhere
+defaults: {visibility: private, default_branch: main}
+repos:
+  master-branch: {default_branch: master, topics: [legacy]}
+  archived:      {archived: true}
+  no-commits:    {empty: true}
+  tagged:        {tags: [v1, v2]}
+  public:        {visibility: public}
+```
 
-## How it behaves
+`sandboxes.yaml` says where it goes. The org is only reachable through here — there is no
+`--org` flag to mistype:
 
-- **Declared repos only.** forgelab looks each declared repository up by name and never lists the
-  org. Anything else in there is invisible to it — never compared, reported or touched — so you
-  can use the sandbox org by hand. The flip side: it guarantees the state of *its* repos, not the
-  contents of the org. If your tests assert on a whole-org listing, filter on the
-  `forgelab-managed` topic or keep hand-made repos out of that org.
-- **Deterministic.** Content is pushed with git under a pinned author and clock, so commit SHAs
-  are identical on every machine and every forge. `fleet.lock.json` is byte-stable, and your tests
-  can assert against it.
-- **`reset` is cheap and narrow.** It writes only to repositories that drifted, moves refs without
-  transferring objects, and cannot create or delete a repository.
-- **Safe by construction.** A non-loopback org must match `org_allowlist`. Every repo forgelab
-  creates carries a marker topic; a same-named repo without it is never adopted, reset or deleted.
-  `apply` and `destroy` make you type the sandbox name. Tokens are read from an environment
-  variable named in `sandboxes.yaml` — never from a file or a flag.
+```yaml
+version: 1
+org_allowlist: '^forgelab-sandbox'      # every non-loopback org must match
+sandboxes:
+  local:
+    forge: forgejo
+    base_url: http://localhost:3000
+    org: forgelab-sandbox
+    token_env: FORGELAB_LOCAL_TOKEN     # the NAME of a variable, never a secret
+```
+
+[`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories, each a shape that
+forge integrations trip on.
+
+| Fixture | Shape |
+|---|---|
+| `compliant` | the control — nothing unusual |
+| `master-branch` | a default branch that is not `main` |
+| `archived` | archived: readable, and rejects every write |
+| `no-commits` | no commits at all — the null default ref |
+| `tagged` | carries tags `v1` and `v2` |
+| `scaffold` | a README and nothing else |
+| `public` | the one public repository |
+| `with-workflow` | content under a dot-directory |
+| `billing-api` · `ledger-worker` · `node-gateway` · `parser-svc` | plain services, with topics |
+
+Twelve is chosen for its divisors: list the fleet with a page size of 12, 6, 5, 4, 3 or 1 and you
+get an exact single page, exact multiples, a short tail and a deep cursor chain.
+
+## 🧭 How it behaves
+
+**👀 Declared repos only.** ForgeLab looks each declared repository up by name and never lists the
+org. Anything else in there is invisible to it — never compared, reported or touched — so you can
+use the sandbox org by hand.
+
+> [!NOTE]
+> The flip side: ForgeLab guarantees the state of *its* repos, not the contents of the org. If
+> your tests assert on a whole-org listing, filter on the `forgelab-managed` topic or keep
+> hand-made repos out of that org.
+
+**🎯 Deterministic.** Content is pushed with git under a pinned author and clock, so commit SHAs
+are identical on every machine and every forge. `fleet.lock.json` is byte-stable, and your tests
+can assert against it.
+
+**🪶 `reset` is cheap and narrow.** It writes only to repositories that drifted, moves refs without
+transferring objects, and *cannot* create or delete a repository — a missing one is exit 2, not
+something to helpfully put back.
+
+**🔒 Safe by construction.** A non-loopback org must match `org_allowlist`. Every repo ForgeLab
+creates carries a marker topic; a same-named repo without it is never adopted, reset or deleted.
+`apply` and `destroy` make you type the sandbox name. Tokens are read from an environment variable
+named in `sandboxes.yaml` — never from a file or a flag.
+
+### Exit codes
+
+`verify` is built to be a CI gate, so it keeps apart two failures that want opposite responses:
 
 | Exit | Meaning | Do |
-|---|---|---|
-| 0 | matches the lock | proceed |
-| 1 | drift: commits, branches, tags, open pull requests, settings | `reset`, retry once |
-| 2 | guard failure: repo missing, not forgelab's, baseline or fleet changed | stop, look |
+|:---:|---|---|
+| `0` | matches the lock | proceed |
+| `1` | **drift** — commits, branches, tags, open pull requests, settings | `reset`, retry once |
+| `2` | **guard failure** — repo missing, not ForgeLab's, baseline or fleet changed | stop, look |
 
-What `reset` cannot restore: closed pull requests and their numbers (never assert on a number),
-and an `empty` repo that was pushed to (delete it on the forge, then `apply`).
+> [!WARNING]
+> `reset` cannot restore closed pull requests or their numbers — request numbers only ever go up,
+> so never assert on one. It also cannot empty a `no-commits` repo that was pushed to: delete it
+> on the forge, then `apply`.
 
-## Development
+## 🛠 Development
 
 ```sh
 make unit     # no Docker
 make test     # end-to-end against a throwaway Forgejo container
 make ci       # exactly what CI runs: lint, then test
+make dist     # cross-compile the release archives into ./dist
 ```
+
+Pushing a `v*` tag publishes a release: `git tag v0.1.0 && git push origin v0.1.0`.
+
+## 📄 License
+
+[MIT](LICENSE)
