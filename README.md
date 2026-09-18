@@ -59,18 +59,7 @@ ok: 12 repositories match fleet.lock.json
 ```
 
 Creating repositories is expensive and rare; putting them back is cheap and constant. So the
-commands are split along that line:
-
-```mermaid
-flowchart LR
-    F["📁 fleet.yaml<br/>repos/"] -->|"apply · when the fleet changes"| S[("🏢 sandbox org")]
-    S --> V{"verify"}
-    V -->|"0 · ok"| T["🧪 run your tests"]
-    T --> R["reset · every run"]
-    V -->|"1 · drift"| R
-    R --> V
-    V -->|"2 · guard failure"| H["🛑 stop, look"]
-```
+commands are split along that line: `apply` when the fleet changes, `reset` around every test run.
 
 | Command | What it does | Writes? |
 |---|---|---|
@@ -90,12 +79,9 @@ A prebuilt binary, for Linux and macOS on x86_64 and arm64:
 ```sh
 curl -fsSL "https://github.com/repoplane/forgelab/releases/latest/download/forgelab_$(uname -s)_$(uname -m).tar.gz" \
   | sudo tar -xz -C /usr/local/bin forgelab
-forgelab version
 ```
 
-> [!TIP]
-> In CI, pin a version: replace `latest/download` with `download/v0.1.0`. Every release carries a
-> `checksums.txt` (SHA-256) next to the archives.
+To pin a version, as CI should, replace `latest/download` with `download/v0.1.0`.
 
 Or build it from source with Go:
 
@@ -185,12 +171,9 @@ get an exact single page, exact multiples, a short tail and a deep cursor chain.
 
 **👀 Declared repos only.** ForgeLab looks each declared repository up by name and never lists the
 org. Anything else in there is invisible to it — never compared, reported or touched — so you can
-use the sandbox org by hand.
-
-> [!NOTE]
-> The flip side: ForgeLab guarantees the state of *its* repos, not the contents of the org. If
-> your tests assert on a whole-org listing, filter on the `forgelab-managed` topic or keep
-> hand-made repos out of that org.
+use the sandbox org by hand. The flip side: ForgeLab guarantees the state of *its* repos, not the
+contents of the org. If your tests assert on a whole-org listing, filter on the `forgelab-managed`
+topic or keep hand-made repos out of that org.
 
 **🎯 Deterministic.** Content is pushed with git under a pinned author and clock, so commit SHAs
 are identical on every machine and every forge. `fleet.lock.json` is byte-stable, and your tests
@@ -215,10 +198,9 @@ named in `sandboxes.yaml` — never from a file or a flag.
 | `1` | **drift** — commits, branches, tags, open pull requests, settings | `reset`, retry once |
 | `2` | **guard failure** — repo missing, not ForgeLab's, baseline or fleet changed | stop, look |
 
-> [!WARNING]
-> `reset` cannot restore closed pull requests or their numbers — request numbers only ever go up,
-> so never assert on one. It also cannot empty a `no-commits` repo that was pushed to: delete it
-> on the forge, then `apply`.
+What `reset` cannot restore: closed pull requests and their numbers — request numbers only ever go
+up, so never assert on one — and a `no-commits` repo that was pushed to (delete it on the forge,
+then `apply`).
 
 ## 🛠 Development
 
