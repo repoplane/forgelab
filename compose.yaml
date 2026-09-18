@@ -13,6 +13,9 @@ services:
       - "3000:3000"
     environment:
       FORGEJO__database__DB_TYPE: sqlite3
+      # Not tuning: without these, concurrent pushes can lose a branch to "database is locked".
+      FORGEJO__database__SQLITE_JOURNAL_MODE: WAL
+      FORGEJO__database__SQLITE_TIMEOUT: "20000"
       FORGEJO__security__INSTALL_LOCK: "true"
       FORGEJO__security__SECRET_KEY: forgelab-local-not-a-secret
       FORGEJO__server__ROOT_URL: http://localhost:3000/

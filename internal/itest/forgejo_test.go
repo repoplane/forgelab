@@ -39,7 +39,14 @@ const (
 
 // config keeps start-up cheap: the repository indexer in particular would otherwise index
 // every seeded repository.
+//
+// The two SQLite settings are not tuning. Forgejo records a pushed branch from a
+// post-receive hook, and with the default rollback journal and 500ms busy timeout, eight
+// concurrent pushes can lose that write to "database is locked" -- after which the branch
+// never appears in the API, however long you wait. Keep in step with compose.yaml.
 var config = map[string]string{
+	"database.SQLITE_JOURNAL_MODE": "WAL",
+	"database.SQLITE_TIMEOUT":      "20000",
 	"repository.DEFAULT_BRANCH":    "main",
 	"indexer.REPO_INDEXER_ENABLED": "false",
 	"actions.ENABLED":              "false",

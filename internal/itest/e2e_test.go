@@ -116,12 +116,18 @@ func TestWalk(t *testing.T) {
 	if string(first) != string(second) {
 		t.Error("the lock changed across destroy + apply: seeding is not deterministic")
 	}
-	committed, err := os.ReadFile(filepath.Join("..", "..", "examples", "fleet", fleet.LockFile))
+	golden := filepath.Join("..", "..", "examples", "fleet", fleet.LockFile)
+	if os.Getenv("FORGELAB_UPDATE_LOCK") != "" {
+		if err := os.WriteFile(golden, second, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	committed, err := os.ReadFile(golden)
 	if err != nil {
 		t.Fatalf("examples/fleet has no committed lock: %v", err)
 	}
 	if string(committed) != string(second) {
-		t.Error("examples/fleet/fleet.lock.json is stale: apply the example fleet and commit the lock")
+		t.Error("examples/fleet/fleet.lock.json is stale: run `make lock` and commit it")
 	}
 }
 

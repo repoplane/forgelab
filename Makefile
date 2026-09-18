@@ -12,7 +12,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 PLATFORMS := linux/amd64/Linux_x86_64 linux/arm64/Linux_aarch64 \
              darwin/amd64/Darwin_x86_64 darwin/arm64/Darwin_arm64
 
-.PHONY: help build dist lint test unit ci up down
+.PHONY: help build dist lint test unit lock ci up down
 
 ## Show this help
 help:
@@ -53,6 +53,10 @@ test:
 ## Run the tests that need no Docker
 unit:
 	go test -count=1 -short ./...
+
+## Regenerate examples/fleet/fleet.lock.json after editing the example fleet
+lock:
+	FORGELAB_UPDATE_LOCK=1 go test -count=1 -run TestWalk ./internal/itest
 
 # The workflow calls the same targets, so a green `make ci` here means a green run there.
 ## Everything CI runs: lint, then test

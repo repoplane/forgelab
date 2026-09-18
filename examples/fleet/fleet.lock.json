@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fleet_digest": "sha256:4c55f16a05ff5d1aed83db26aff7dad6729494004288573bb47ba1b8fe32196a",
+  "fleet_digest": "sha256:099e7e86e131c90302d00b90400cc3b02ff4784e02efda97ed564a6d6a8ef1da",
   "repos": [
     {
       "name": "archived",
@@ -33,6 +33,15 @@
       "archived": false,
       "empty": false,
       "baseline": "bb39569c2c7ba8a3a244a5926ac35a5fa3b81156"
+    },
+    {
+      "name": "dotfiles",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "ccce04d5b16251b9843b2364b16328ecb8a6dabc"
     },
     {
       "name": "ledger-worker",
@@ -122,15 +131,6 @@
         "v2"
       ],
       "baseline": "a49bb7b288aec3c585df4766ae751fdbdcfaf0eb"
-    },
-    {
-      "name": "with-workflow",
-      "default_branch": "main",
-      "visibility": "private",
-      "topics": [],
-      "archived": false,
-      "empty": false,
-      "baseline": "307a5b7a0f2943c8aeac5741bafad747f0043c62"
     }
   ]
 }
