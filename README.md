@@ -30,7 +30,7 @@ to be there.**
 
 | | Forgejo | GitHub | GitLab |
 |---|:---:|:---:|:---:|
-| Supported | ✅ | 🧪 beta | 🔜 |
+| Supported | ✅ | ✅ | 🔜 |
 
 ## ⚡ What it looks like
 
