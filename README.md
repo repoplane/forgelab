@@ -158,11 +158,22 @@ A GitHub sandbox needs no `base_url` (set it only for Enterprise Server):
     token_env: FORGELAB_GH_TOKEN
 ```
 
-The token needs to create, push to, configure and delete repositories in that org: a classic PAT
-with `repo` and `delete_repo`, or a fine-grained one scoped to the org with *Administration*,
-*Contents* and *Pull requests* read/write. Add `workflow` only if a fixture carries
-`.github/workflows/`. Use an org that holds nothing else you care about, and remember that a
-`visibility: public` fixture really is public there.
+Use a **fine-grained personal access token** whose *resource owner* is the sandbox org: it cannot
+reach anything else, so a leak or a mistake stays inside disposable fixtures. Give it *All
+repositories*, and read/write on **Administration**, **Contents** and **Pull requests**. (A classic
+PAT with `repo` + `delete_repo` also works, but it can touch every repository you can.) Add
+*Workflows* only if a fixture carries `.github/workflows/`.
+
+ForgeLab only ever reads the variable named by `token_env`, so keep the token wherever you keep
+secrets — it never needs to be in a file, a flag or your `gh` login. On macOS, the Keychain:
+
+```sh
+security add-generic-password -a "$USER" -s forgelab-gh -w        # prompts; paste the token
+export FORGELAB_GH_TOKEN=$(security find-generic-password -s forgelab-gh -w)
+```
+
+Use an org that holds nothing else you care about, and remember that a `visibility: public`
+fixture really is public there.
 
 [`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories, each a shape that
 forge integrations trip on.

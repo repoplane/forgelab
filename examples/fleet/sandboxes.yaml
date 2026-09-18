@@ -10,3 +10,11 @@ sandboxes:
     base_url: http://localhost:3000       # loopback: exempt from the allowlist
     org: forgelab-sandbox
     token_env: FORGELAB_LOCAL_TOKEN       # the NAME of a variable; `make up` prints the export
+
+  # A GitHub sandbox. Uncomment, point it at an org that holds nothing else, and make sure
+  # org_allowlist above matches it. base_url is only needed for Enterprise Server.
+  #
+  # gh:
+  #   forge: github
+  #   org: forgelab-sandbox
+  #   token_env: FORGELAB_GH_TOKEN          # see the README for the token to create
