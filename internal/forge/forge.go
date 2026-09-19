@@ -32,8 +32,9 @@ type Request struct {
 // cannot hold, rather than demand a different fleet for it: one fleet, one lock, every forge.
 type Caps struct {
 	// Topics: repositories carry topics. Without them there is nowhere to put the marker
-	// either, so the "never adopt a repository forgelab did not create" guard is off and the
-	// allowlist is the only thing scoping the sandbox.
+	// either, so the "never adopt a repository forgelab did not create" guard is off: there,
+	// a repository with a declared name is forgelab's, and only the sandbox's own
+	// configuration and the reach of its token keep it in the right place.
 	Topics bool
 	// Visibility: visibility is set per repository (not per project).
 	Visibility bool

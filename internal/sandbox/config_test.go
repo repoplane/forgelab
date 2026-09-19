@@ -1,22 +1,25 @@
 package sandbox
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
 const testConfig = `version: 1
-org_allowlist: '^acme-sandbox'
+org_allowlist: '^this-is-ignored-now$'
 sandboxes:
-  ok:       {forge: forgejo, base_url: "https://forge.example.test", org: acme-sandbox-2, token_env: T}
-  prod:     {forge: forgejo, base_url: "https://forge.example.test", org: acme,           token_env: T}
-  loopback: {forge: forgejo, base_url: "http://127.0.0.1:3000",      org: anything,       token_env: T}
-  partial:  {forge: forgejo, base_url: "https://forge.example.test", org: acme-sandbox}
+  gh:      {forge: github,      org: acme-sandbox, token_env: T}
+  gl:      {forge: gitlab,      org: acme-sandbox/services, token_env: T}
+  ado:     {forge: azuredevops, org: acme, project: sandbox, token_env: T}
+  local:   {forge: forgejo,     base_url: "http://127.0.0.1:3000", org: anything, token_env: T}
+  nourl:   {forge: forgejo,     org: acme-sandbox, token_env: T}
+  badurl:  {forge: forgejo,     base_url: "localhost:3000", org: acme-sandbox, token_env: T}
+  partial: {forge: github,      org: acme-sandbox}
+  noproj:  {forge: azuredevops, org: acme, token_env: T}
 `
 
-func TestAllowlist(t *testing.T) {
+func TestSandboxResolution(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ConfigFile)
 	if err := os.WriteFile(path, []byte(testConfig), 0o644); err != nil {
 		t.Fatal(err)
@@ -26,47 +29,26 @@ func TestAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if sb, err := cfg.Sandbox("ok"); err != nil || sb.MarkerTopic != DefaultMarkerTopic {
-		t.Errorf("ok: sandbox=%+v err=%v", sb, err)
+	// Hosted forges know where they live; the marker topic has a default.
+	for name, want := range map[string]struct{ baseURL, scope string }{
+		"gh":    {"https://github.com", "acme-sandbox"},
+		"gl":    {"https://gitlab.com", "acme-sandbox/services"},
+		"ado":   {"https://dev.azure.com", "acme/sandbox"},
+		"local": {"http://127.0.0.1:3000", "anything"},
+	} {
+		sb, err := cfg.Sandbox(name)
+		if err != nil || sb.BaseURL != want.baseURL || sb.Scope() != want.scope || sb.MarkerTopic != DefaultMarkerTopic {
+			t.Errorf("%s: %+v err=%v", name, sb, err)
+		}
 	}
-	// There is no production organisation on a laptop.
-	if _, err := cfg.Sandbox("loopback"); err != nil {
-		t.Errorf("loopback: %v", err)
-	}
-	// The adjacent org -- the one typed every day -- is the likeliest wrong target.
-	var guard *GuardError
-	if _, err := cfg.Sandbox("prod"); !errors.As(err, &guard) {
-		t.Errorf("prod: want a guard failure, got %v", err)
-	}
-	if _, err := cfg.Sandbox("partial"); err == nil {
-		t.Error("partial: want an error for the missing token_env")
-	}
-	if _, err := cfg.Sandbox("nope"); err == nil {
-		t.Error("nope: want an error for an unknown sandbox")
+	// A left-over org_allowlist no longer refuses anything.
+	if cfg.OrgAllowlist == "" {
+		t.Error("org_allowlist should still be parsed, so that Open can say it is unused")
 	}
 
-	// Off loopback, no allowlist at all is a refusal rather than a free pass.
-	cfg.OrgAllowlist = ""
-	if _, err := cfg.Sandbox("ok"); !errors.As(err, &guard) {
-		t.Errorf("no allowlist: want a guard failure, got %v", err)
-	}
-}
-
-// On a forge with projects the allowlist sees org/project: the org alone says too little.
-func TestAllowlistSeesTheProject(t *testing.T) {
-	cfg := &Config{Version: 1, OrgAllowlist: `^acme/sandbox$`, Sandboxes: map[string]Sandbox{
-		"ok":        {Forge: "azuredevops", Org: "acme", Project: "sandbox", TokenEnv: "T"},
-		"wrong":     {Forge: "azuredevops", Org: "acme", Project: "production", TokenEnv: "T"},
-		"noproject": {Forge: "azuredevops", Org: "acme", TokenEnv: "T"},
-	}}
-	if sb, err := cfg.Sandbox("ok"); err != nil || sb.BaseURL != "https://dev.azure.com" {
-		t.Errorf("ok: %+v err=%v", sb, err)
-	}
-	var guard *GuardError
-	if _, err := cfg.Sandbox("wrong"); !errors.As(err, &guard) {
-		t.Errorf("wrong project: want a guard failure, got %v", err)
-	}
-	if _, err := cfg.Sandbox("noproject"); err == nil {
-		t.Error("azuredevops without a project must be refused")
+	for _, name := range []string{"nourl", "badurl", "partial", "noproj", "nope"} {
+		if _, err := cfg.Sandbox(name); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
 	}
 }

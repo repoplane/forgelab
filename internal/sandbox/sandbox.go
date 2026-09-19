@@ -67,7 +67,7 @@ type Env struct {
 // workers bounds how many repositories are worked on at once.
 const workers = 8
 
-// Open resolves the sandbox, checks the allowlist and builds the forge client.
+// Open resolves the sandbox and builds the forge client.
 func Open(o Options) (*Env, error) {
 	if o.FleetDir == "" {
 		o.FleetDir = "."
@@ -84,6 +84,9 @@ func Open(o Options) (*Env, error) {
 	cfg, err := LoadConfig(o.ConfigPath)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.OrgAllowlist != "" {
+		fmt.Fprintf(os.Stderr, "forgelab: note: org_allowlist is no longer used; remove it from %s\n", o.ConfigPath)
 	}
 	sb, err := cfg.Sandbox(o.Sandbox)
 	if err != nil {

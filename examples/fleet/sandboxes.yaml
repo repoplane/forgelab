@@ -1,18 +1,14 @@
 version: 1
 
-# Every org on a non-loopback forge must match this. Choose it so that it CANNOT match the
-# organisation holding your real code.
-org_allowlist: '^forgelab-sandbox'
-
 sandboxes:
   local:
     forge: forgejo
-    base_url: http://localhost:3000       # loopback: exempt from the allowlist
+    base_url: http://localhost:3000
     org: forgelab-sandbox
     token_env: FORGELAB_LOCAL_TOKEN       # the NAME of a variable; `make up` prints the export
 
-  # A GitHub sandbox. Uncomment, point it at an org that holds nothing else, and make sure
-  # org_allowlist above matches it. base_url is only needed for Enterprise Server.
+  # A GitHub sandbox. Uncomment and point it at an org that holds nothing else, with a token
+  # that can reach only that org. base_url is only needed for Enterprise Server.
   #
   # gh:
   #   forge: github
@@ -26,8 +22,8 @@ sandboxes:
   #   org: forgelab-sandbox
   #   token_env: FORGELAB_GL_TOKEN
 
-  # An Azure DevOps sandbox is a project inside an organisation; org_allowlist is matched
-  # against "org/project". Topics, visibility and the marker guard do not exist there.
+  # An Azure DevOps sandbox is a project inside an organisation. Topics, visibility and the
+  # marker guard do not exist there, so use a project that holds nothing else.
   #
   # ado:
   #   forge: azuredevops

@@ -140,7 +140,6 @@ repos:
 
 ```yaml
 version: 1
-org_allowlist: '^forgelab-sandbox'      # every non-loopback org must match
 sandboxes:
   local:
     forge: forgejo
@@ -154,7 +153,7 @@ A GitHub sandbox needs no `base_url` (set it only for Enterprise Server):
 ```yaml
   gh:
     forge: github
-    org: your-sandbox-org               # must match org_allowlist
+    org: your-sandbox-org
     token_env: FORGELAB_GH_TOKEN
 ```
 
@@ -193,14 +192,13 @@ endpoint. A classic token with `api` + `write_repository` also works. Since a Gi
 as narrow as its account, a dedicated account that belongs to nothing but the sandbox group is the
 safest owner for it.
 
-An Azure DevOps sandbox is a **project** inside an organisation, and the allowlist is matched
-against `org/project`:
+An Azure DevOps sandbox is a **project** inside an organisation:
 
 ```yaml
   ado:
     forge: azuredevops
     org: your-org
-    project: your-sandbox-project       # org_allowlist must match "your-org/your-sandbox-project"
+    project: your-sandbox-project
     token_env: FORGELAB_ADO_TOKEN
 ```
 
@@ -248,8 +246,10 @@ can assert against it.
 transferring objects, and *cannot* create or delete a repository — a missing one is exit 2, not
 something to helpfully put back.
 
-**🔒 Safe by construction.** A non-loopback org must match `org_allowlist`. Every repo ForgeLab
-creates carries a marker topic; a same-named repo without it is never adopted, reset or deleted.
+**🔒 Safe by construction.** Every repo ForgeLab creates carries a marker topic; a same-named repo
+without it is never adopted, reset or deleted — so even pointed at the wrong org, the worst it can
+do is create its own fixtures there. Give it a token that can only reach the sandbox, and that is
+the whole blast radius.
 `destroy` asks before deleting (`--yes` skips it). Tokens are read from an environment variable
 named in `sandboxes.yaml` — never from a file or a flag.
 

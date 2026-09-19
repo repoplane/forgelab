@@ -2,10 +2,8 @@ package sandbox
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"os"
-	"regexp"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,11 +24,14 @@ const configVersion = 1
 
 // Config is sandboxes.yaml: where a fleet may be applied.
 type Config struct {
-	Version int `yaml:"version"`
-	// OrgAllowlist is a regular expression every non-loopback org must match. Choose it so
-	// that it cannot match the organisation holding your real code.
-	OrgAllowlist string             `yaml:"org_allowlist"`
-	Sandboxes    map[string]Sandbox `yaml:"sandboxes"`
+	Version   int                `yaml:"version"`
+	Sandboxes map[string]Sandbox `yaml:"sandboxes"`
+
+	// OrgAllowlist is no longer used; it is still parsed so that Open can say so. It was a
+	// pattern the org had to match, kept in the same file as the org it was checking -- a
+	// speed bump, not a guard. What scopes a sandbox is what its token can reach, and what
+	// protects a wrong target is checked on the forge: the marker, and declared-repos-only.
+	OrgAllowlist string `yaml:"org_allowlist"`
 }
 
 // Sandbox is one forge organisation. Credentials are descriptors, never values: the file
@@ -47,8 +48,7 @@ type Sandbox struct {
 	MarkerTopic string `yaml:"marker_topic"`
 }
 
-// Scope is where the sandbox writes, and what org_allowlist is matched against: the org, or
-// org/project on a forge that has projects -- there the org alone says too little.
+// Scope is where the sandbox writes: the org, or org/project on a forge that has projects.
 func (s Sandbox) Scope() string {
 	if s.Project != "" {
 		return s.Org + "/" + s.Project
@@ -72,8 +72,8 @@ func LoadConfig(path string) (*Config, error) {
 	return &c, nil
 }
 
-// Sandbox resolves a sandbox by name and checks it against the allowlist. The org is only
-// reachable through here: there is no flag that takes one.
+// Sandbox resolves a sandbox by name. The org is only reachable through here: there is no
+// flag that takes one.
 func (c *Config) Sandbox(name string) (Sandbox, error) {
 	sb, ok := c.Sandboxes[name]
 	if !ok {
@@ -100,42 +100,8 @@ func (c *Config) Sandbox(name string) (Sandbox, error) {
 	if sb.Forge == "" || sb.BaseURL == "" || sb.Org == "" || sb.TokenEnv == "" {
 		return Sandbox{}, fmt.Errorf("sandbox %q: forge, base_url, org and token_env are required", name)
 	}
-	if err := c.checkAllowlist(sb); err != nil {
-		return Sandbox{}, err
+	if u, err := url.Parse(sb.BaseURL); err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return Sandbox{}, fmt.Errorf("sandbox %q: base_url %q is not a URL", name, sb.BaseURL)
 	}
 	return sb, nil
-}
-
-// checkAllowlist is the one guard that is a claim in a file rather than a fact on the
-// forge. A loopback forge is exempt: there is no production organisation on a laptop, and
-// requiring the pattern there would only teach people to loosen it.
-func (c *Config) checkAllowlist(sb Sandbox) error {
-	u, err := url.Parse(sb.BaseURL)
-	if err != nil || u.Hostname() == "" {
-		return fmt.Errorf("sandbox %q: base_url %q is not a URL", sb.Name, sb.BaseURL)
-	}
-	if isLoopback(u.Hostname()) {
-		return nil
-	}
-	if c.OrgAllowlist == "" {
-		return &GuardError{Msg: fmt.Sprintf(
-			"sandbox %q is not on loopback and the config has no org_allowlist", sb.Name)}
-	}
-	re, err := regexp.Compile(c.OrgAllowlist)
-	if err != nil {
-		return fmt.Errorf("org_allowlist: %w", err)
-	}
-	if !re.MatchString(sb.Scope()) {
-		return &GuardError{Msg: fmt.Sprintf(
-			"sandbox %q: %q does not match org_allowlist %q", sb.Name, sb.Scope(), c.OrgAllowlist)}
-	}
-	return nil
-}
-
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
