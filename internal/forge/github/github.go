@@ -350,6 +350,9 @@ func (c *Client) DeleteTag(ctx context.Context, name, tag string) error {
 	return err
 }
 
+// AllowForcePush has nothing to lift: forgelab does not protect branches on this forge yet.
+func (c *Client) AllowForcePush(context.Context, string, string) error { return nil }
+
 func (c *Client) OpenRequests(ctx context.Context, name string) ([]forge.Request, error) {
 	type pull struct {
 		Number int    `json:"number"`

@@ -122,6 +122,26 @@ func TestUpdateSettingsOrder(t *testing.T) {
 	}
 }
 
+func TestAllowForcePush(t *testing.T) {
+	status := http.StatusNoContent
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) })
+
+	if err := c.AllowForcePush(ctx, "svc", "release/1"); err != nil {
+		t.Fatal(err)
+	}
+	if (*seen)[0] != "DELETE "+svc+"/protected_branches/release%2F1" {
+		t.Errorf("got %s", (*seen)[0])
+	}
+	status = http.StatusNotFound // no rule: already force-pushable
+	if err := c.AllowForcePush(ctx, "svc", "main"); err != nil {
+		t.Errorf("a missing rule is not an error: %v", err)
+	}
+	status = http.StatusForbidden
+	if err := c.AllowForcePush(ctx, "svc", "main"); err == nil {
+		t.Error("a refused unprotect must surface")
+	}
+}
+
 // gitlab.com only schedules a deletion; the second call makes it real.
 func TestDeleteIsPermanent(t *testing.T) {
 	var queries []string

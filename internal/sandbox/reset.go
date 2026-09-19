@@ -80,6 +80,11 @@ func (e *Env) resetOne(ctx context.Context, s *state) error {
 	}
 
 	if s.refsDirty {
+		// Asked here, right before the push, and not assumed from apply: the branch may
+		// have been protected since, by the forge or by the test that just ran.
+		if err := e.Forge.AllowForcePush(ctx, name, want.DefaultBranch); err != nil {
+			return fmt.Errorf("allow force-push: %w", err)
+		}
 		url, err := e.Forge.GitURL(name)
 		if err != nil {
 			return err

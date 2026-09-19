@@ -214,6 +214,12 @@ func (e *Env) applyOne(ctx context.Context, c *change) error {
 	}
 
 	if (c.create || c.push) && c.built != nil {
+		// A re-seed replaces the seed commit, which is a force-push onto an existing branch.
+		if !c.create {
+			if err := e.Forge.AllowForcePush(ctx, name, want.DefaultBranch); err != nil {
+				return fmt.Errorf("allow force-push: %w", err)
+			}
+		}
 		url, err := e.Forge.GitURL(name)
 		if err != nil {
 			return err

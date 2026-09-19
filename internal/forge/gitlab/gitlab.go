@@ -313,7 +313,7 @@ func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settin
 		}
 	}
 	if s.DefaultBranch != nil {
-		if err := c.unprotect(ctx, name, *s.DefaultBranch); err != nil {
+		if err := c.AllowForcePush(ctx, name, *s.DefaultBranch); err != nil {
 			return err
 		}
 	}
@@ -326,13 +326,17 @@ func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settin
 	return nil
 }
 
-// unprotect lifts the protection GitLab puts on a default branch the moment it is first
-// pushed. Protected means "no force-push", and reset is a force-push: without this it
-// fails with "You are not allowed to force push code to a protected branch".
-func (c *Client) unprotect(ctx context.Context, name, branch string) error {
+// AllowForcePush removes the branch's protection rule. GitLab protects a default branch the
+// moment it is first pushed, and protected means "no force-push": without this, reset fails
+// with "You are not allowed to force push code to a protected branch".
+//
+// A 404 means there is no rule, which is the goal. It is also what GitLab answers if its own
+// rule has not been created yet, which is why callers ask again right before each force-push
+// instead of relying on the call made at apply time.
+func (c *Client) AllowForcePush(ctx context.Context, name, branch string) error {
 	_, err := c.do(ctx, http.MethodDelete, c.project(name)+"/protected_branches/"+url.PathEscape(branch), nil, nil)
 	if hasStatus(err, http.StatusNotFound) {
-		return nil // not protected
+		return nil
 	}
 	return err
 }

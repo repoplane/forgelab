@@ -63,6 +63,13 @@ type Forge interface {
 	DeleteBranch(ctx context.Context, name, branch string) error
 	DeleteTag(ctx context.Context, name, tag string) error
 
+	// AllowForcePush makes sure branch can be force-pushed, lifting whatever the forge or a
+	// test put in the way. forgelab calls it immediately before every force-push rather than
+	// trusting that an earlier step already did: a branch can be protected at any time, by
+	// the forge itself (GitLab protects a default branch on first push, possibly a moment
+	// after the push returns), by an interrupted apply, or by the test that just ran.
+	AllowForcePush(ctx context.Context, name, branch string) error
+
 	OpenRequests(ctx context.Context, name string) ([]Request, error)
 	CloseRequest(ctx context.Context, name string, number int) error
 
