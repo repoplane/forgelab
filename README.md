@@ -74,12 +74,18 @@ Every command takes `--sandbox <name>`, plus `--fleet <dir>` (default `.`), `--c
 
 ## 📦 Install
 
-A prebuilt binary, for Linux and macOS on x86_64 and arm64:
+A prebuilt binary, for Linux and macOS on x86_64 and arm64, into your own `~/.local/bin` — no
+`sudo`, nothing outside your home directory:
 
 ```sh
+mkdir -p ~/.local/bin
 curl -fsSL "https://github.com/repoplane/forgelab/releases/latest/download/forgelab_$(uname -s)_$(uname -m).tar.gz" \
-  | sudo tar -xz -C /usr/local/bin forgelab
+  | tar -xz -C ~/.local/bin forgelab
 ```
+
+If `forgelab version` is then "command not found", `~/.local/bin` is not on your `PATH` yet: add
+`export PATH="$HOME/.local/bin:$PATH"` to your `~/.zshrc` or `~/.bashrc`. To uninstall, delete the
+file.
 
 To pin a version, as CI should, replace `latest/download` with `download/v0.1.0`.
 
@@ -90,6 +96,13 @@ go install github.com/repoplane/forgelab/cmd/forgelab@latest
 ```
 
 ForgeLab needs `git` on the `PATH` at run time.
+
+**Shell completion** — commands, flags, and the sandbox names from your `sandboxes.yaml`. Add one
+line to `~/.zshrc` (or `~/.bashrc`, with `bash`):
+
+```sh
+eval "$(forgelab completion zsh)"
+```
 
 ## 🚀 Try it in two minutes
 
