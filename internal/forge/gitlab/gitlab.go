@@ -161,6 +161,9 @@ func (c *Client) project(name string) string {
 	return "/projects/" + url.PathEscape(c.group+"/"+name)
 }
 
+// Caps: everything forgelab declares has a home here.
+func (c *Client) Caps() forge.Caps { return forge.Caps{Topics: true, Visibility: true} }
+
 // EnsureOrg only checks: on gitlab.com a top-level group cannot be created through the API.
 func (c *Client) EnsureOrg(ctx context.Context) error {
 	_, err := c.namespaceID(ctx)

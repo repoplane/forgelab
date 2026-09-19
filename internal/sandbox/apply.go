@@ -57,7 +57,7 @@ func (e *Env) Apply(ctx context.Context) error {
 	// marker, and has just printed exactly what it is about to do.
 	if len(todo) > 0 {
 		if err := e.Forge.EnsureOrg(ctx); err != nil {
-			return fmt.Errorf("org %s: %w", e.Sandbox.Org, err)
+			return fmt.Errorf("org %s: %w", e.Sandbox.Scope(), err)
 		}
 		err := forEach(ctx, todo, func(ctx context.Context, c *change) error {
 			if err := e.applyOne(ctx, c); err != nil {
@@ -149,22 +149,28 @@ func (e *Env) diffOne(ctx context.Context, c *change) error {
 		c.create = true
 		return nil
 	}
+	caps := e.Forge.Caps()
 	// A repository with this name that forgelab did not create is somebody else's.
-	if !slices.Contains(live.Topics, e.Sandbox.MarkerTopic) {
+	if caps.Topics && !slices.Contains(live.Topics, e.Sandbox.MarkerTopic) {
 		return &GuardError{Msg: fmt.Sprintf(
 			"%s/%s already exists without the %q topic: it is not forgelab's, and apply never adopts. Rename the fixture or remove that repository",
-			e.Sandbox.Org, want.Name, e.Sandbox.MarkerTopic)}
+			e.Sandbox.Scope(), want.Name, e.Sandbox.MarkerTopic)}
 	}
 	c.live = live
 
-	if live.Visibility != want.Visibility {
+	if caps.Visibility && live.Visibility != want.Visibility {
 		c.notes = append(c.notes, "visibility: "+live.Visibility+" → "+want.Visibility)
 	}
 	if live.Archived != want.Archived {
 		c.notes = append(c.notes, fmt.Sprintf("archived: %t → %t", live.Archived, want.Archived))
 	}
-	if got := withoutMarker(live.Topics, e.Sandbox.MarkerTopic); !slices.Equal(got, want.Topics) {
+	if got := withoutMarker(live.Topics, e.Sandbox.MarkerTopic); caps.Topics && !slices.Equal(got, want.Topics) {
 		c.notes = append(c.notes, fmt.Sprintf("topics: %v → %v", got, want.Topics))
+	}
+	// Unreadable while archived: its refs cannot be compared, so it is taken as seeded. To
+	// re-seed one after editing its fixture, destroy it first.
+	if caps.ArchivedUnreadable && live.Archived && want.Archived {
+		return nil
 	}
 	if want.Empty {
 		if !live.Empty {
@@ -254,6 +260,11 @@ func (e *Env) applyOne(ctx context.Context, c *change) error {
 
 func (e *Env) printPlan(verb string, changes []*change) {
 	e.header(verb, len(changes))
+	if caps := e.Forge.Caps(); !caps.Topics || !caps.Visibility {
+		e.printf("  note: %s has no repository topics or per-repository visibility. Those fleet\n"+
+			"        settings are ignored here, and with no topic to carry it so is the marker guard:\n"+
+			"        a repository with a declared name is treated as forgelab's.\n\n", e.Sandbox.Forge)
+	}
 	n := 0
 	for _, c := range changes {
 		switch {

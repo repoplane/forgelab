@@ -32,7 +32,7 @@ func (e *Env) Destroy(ctx context.Context) error {
 		case err != nil:
 			return fmt.Errorf("%s: %w", t.name, err)
 		case !found:
-		case !slices.Contains(live.Topics, e.Sandbox.MarkerTopic):
+		case e.Forge.Caps().Topics && !slices.Contains(live.Topics, e.Sandbox.MarkerTopic):
 			t.skip = fmt.Sprintf("has no %q topic, so it is not forgelab's", e.Sandbox.MarkerTopic)
 		default:
 			t.delete = true
@@ -59,7 +59,7 @@ func (e *Env) Destroy(ctx context.Context) error {
 		return nil
 	}
 	e.printf("\n  Deletion cannot be undone: pull requests, issue numbers and history go with them.\n")
-	e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Org)
+	e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Scope())
 	if err := e.confirm(); err != nil {
 		return err
 	}

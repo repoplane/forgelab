@@ -28,6 +28,20 @@ type Request struct {
 	Title  string
 }
 
+// Caps says what a forge can express. forgelab skips -- out loud, in the plan -- what a forge
+// cannot hold, rather than demand a different fleet for it: one fleet, one lock, every forge.
+type Caps struct {
+	// Topics: repositories carry topics. Without them there is nowhere to put the marker
+	// either, so the "never adopt a repository forgelab did not create" guard is off and the
+	// allowlist is the only thing scoping the sandbox.
+	Topics bool
+	// Visibility: visibility is set per repository (not per project).
+	Visibility bool
+	// ArchivedUnreadable: an archived repository cannot be read at all -- not its refs, not
+	// its requests. forgelab can then only check the flag itself.
+	ArchivedUnreadable bool
+}
+
 // Settings is a partial update: nil fields are left alone.
 type Settings struct {
 	DefaultBranch *string
@@ -39,6 +53,8 @@ type Settings struct {
 // it. There is deliberately no List: forgelab looks declared repositories up by name and
 // never enumerates the organisation, so what it did not declare it cannot see.
 type Forge interface {
+	Caps() Caps
+
 	// EnsureOrg creates the organisation where a forge lets a token do that, and
 	// otherwise checks it exists.
 	EnsureOrg(ctx context.Context) error

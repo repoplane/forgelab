@@ -107,24 +107,32 @@ func (e *Env) compareOne(ctx context.Context, s *state) error {
 	}
 	if !found {
 		s.guards = append(s.guards, fmt.Sprintf("missing from %s: run `forgelab apply --sandbox %s`",
-			e.Sandbox.Org, e.Sandbox.Name))
+			e.Sandbox.Scope(), e.Sandbox.Name))
 		return nil
 	}
 	s.live = live
-	if !slices.Contains(live.Topics, e.Sandbox.MarkerTopic) {
+	caps := e.Forge.Caps()
+	if caps.Topics && !slices.Contains(live.Topics, e.Sandbox.MarkerTopic) {
 		s.guards = append(s.guards, fmt.Sprintf("exists without the %q topic, so it is not forgelab's: refusing to touch it",
 			e.Sandbox.MarkerTopic))
 		return nil
 	}
 
-	if live.Visibility != want.Visibility {
+	if caps.Visibility && live.Visibility != want.Visibility {
 		s.drift = append(s.drift, fmt.Sprintf("visibility is %s, want %s", live.Visibility, want.Visibility))
 	}
 	if live.Archived != want.Archived {
 		s.drift = append(s.drift, fmt.Sprintf("archived is %t, want %t", live.Archived, want.Archived))
 	}
-	if got := withoutMarker(live.Topics, e.Sandbox.MarkerTopic); !slices.Equal(got, want.Topics) {
+	if got := withoutMarker(live.Topics, e.Sandbox.MarkerTopic); caps.Topics && !slices.Equal(got, want.Topics) {
 		s.drift = append(s.drift, fmt.Sprintf("topics are %v, want %v", got, want.Topics))
+	}
+	// On a forge where archived means unreadable there is nothing further to look at. If it
+	// is supposed to be archived, nothing a test could have changed either. If it is not,
+	// its refs cannot be checked, so reset rewinds them once it has made it readable again.
+	if caps.ArchivedUnreadable && live.Archived {
+		s.refsDirty = !want.Archived && !want.Empty
+		return nil
 	}
 
 	if want.Empty {
@@ -212,7 +220,7 @@ func (e *Env) compareOne(ctx context.Context, s *state) error {
 func (e *Env) waitReady(ctx context.Context, repos []fleet.LockRepo) error {
 	deadline := time.Now().Add(60 * time.Second)
 	return forEach(ctx, repos, func(ctx context.Context, want fleet.LockRepo) error {
-		if want.Empty {
+		if want.Empty || (want.Archived && e.Forge.Caps().ArchivedUnreadable) {
 			return nil
 		}
 		// Quick first looks for a local forge, backing off to a second for a hosted one.

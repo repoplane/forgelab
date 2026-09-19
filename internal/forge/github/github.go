@@ -206,6 +206,9 @@ func (c *Client) repoPath(name string) string {
 	return "/repos/" + url.PathEscape(c.org) + "/" + url.PathEscape(name)
 }
 
+// Caps: everything forgelab declares has a home here.
+func (c *Client) Caps() forge.Caps { return forge.Caps{Topics: true, Visibility: true} }
+
 // EnsureOrg only checks: a GitHub organisation cannot be created through the API.
 func (c *Client) EnsureOrg(ctx context.Context) error {
 	_, err := c.do(ctx, http.MethodGet, "/orgs/"+url.PathEscape(c.org), nil, nil)
