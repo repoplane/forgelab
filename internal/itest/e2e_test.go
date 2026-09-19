@@ -3,10 +3,12 @@ package itest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/repoplane/forgelab/internal/fleet"
 	"github.com/repoplane/forgelab/internal/sandbox"
@@ -128,6 +130,84 @@ func TestWalk(t *testing.T) {
 	}
 	if string(committed) != string(second) {
 		t.Error("examples/fleet/fleet.lock.json is stale: run `make lock` and commit it")
+	}
+}
+
+// The path a pull-request-driven consumer actually takes: open a pull request, merge it, then
+// roll it back with a second merged pull request. Nobody force-pushed or touched main
+// directly, yet main is two merges ahead -- and reset has to rewind it.
+func TestMergedPullRequestsAreRewound(t *testing.T) {
+	l := newLab(t)
+	l.mustApply()
+	repo := l.repo("billing-api")
+
+	// merge retries: a forge computes mergeability after the pull request is opened, and
+	// answers "try again later" until it has.
+	merge := func(number int) {
+		t.Helper()
+		var code int
+		for range 40 {
+			if code = l.api("POST", fmt.Sprintf("%s/pulls/%d/merge", repo, number), `{"Do":"merge"}`); code == 200 {
+				return
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		t.Fatalf("merge #%d: HTTP %d", number, code)
+	}
+	open := func(branch, title string) int {
+		t.Helper()
+		var pr struct {
+			Number int `json:"number"`
+		}
+		body := fmt.Sprintf(`{"head":%q,"base":"main","title":%q}`, branch, title)
+		if code := l.json("POST", repo+"/pulls", body, &pr); code != 201 {
+			t.Fatalf("open %s: HTTP %d", branch, code)
+		}
+		return pr.Number
+	}
+
+	// the change
+	l.mustAPI("POST", repo+"/contents/POLICY.md",
+		`{"content":"cG9saWN5Cg==","message":"add policy","new_branch":"campaign/run-42"}`)
+	change := open("campaign/run-42", "campaign: add policy")
+	merge(change)
+
+	// the rollback: a second pull request undoing the first
+	var file struct {
+		SHA string `json:"sha"`
+	}
+	l.json("GET", repo+"/contents/POLICY.md", "", &file)
+	l.mustAPI("DELETE", repo+"/contents/POLICY.md",
+		fmt.Sprintf(`{"sha":%q,"message":"revert: add policy","new_branch":"campaign/run-42-rollback"}`, file.SHA))
+	rollback := open("campaign/run-42-rollback", "revert: add policy")
+	merge(rollback)
+
+	err := l.env().Verify(ctx)
+	if exitKind(err) != "drift" || !strings.Contains(err.Error(), "billing-api: ") ||
+		!strings.Contains(err.Error(), "main is at") {
+		t.Fatalf("verify after two merges: want drift on main, got %v", err)
+	}
+	if strings.Contains(err.Error(), "open request") {
+		t.Errorf("merged pull requests are not open ones: %v", err)
+	}
+
+	if err := l.env().Reset(ctx); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if err := l.env().Verify(ctx); err != nil {
+		t.Fatalf("verify after reset: %v", err)
+	}
+
+	// What reset cannot do, pinned so that nobody is surprised: the pull requests are still
+	// there, still merged, and the next one will be #3. A consumer must tell its runs apart
+	// by something it controls -- a branch prefix, a label -- never by number or by count.
+	for _, number := range []int{change, rollback} {
+		var pr struct {
+			Merged bool `json:"merged"`
+		}
+		if code := l.json("GET", fmt.Sprintf("%s/pulls/%d", repo, number), "", &pr); code != 200 || !pr.Merged {
+			t.Errorf("pull request #%d after reset: HTTP %d merged=%t, want it to persist as merged", number, code, pr.Merged)
+		}
 	}
 }
 

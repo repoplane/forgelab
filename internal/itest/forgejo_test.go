@@ -209,6 +209,27 @@ func (l *lab) api(method, path, body string) int {
 	return resp.StatusCode
 }
 
+// json calls the forge and decodes the answer into out, returning the status code.
+func (l *lab) json(method, path, body string, out any) int {
+	l.t.Helper()
+	req, err := http.NewRequest(method, baseURL+"/api/v1"+path, strings.NewReader(body))
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if out != nil && len(raw) > 0 {
+		_ = json.Unmarshal(raw, out)
+	}
+	return resp.StatusCode
+}
+
 func (l *lab) mustAPI(method, path, body string) {
 	l.t.Helper()
 	if code := l.api(method, path, body); code < 200 || code > 299 {
