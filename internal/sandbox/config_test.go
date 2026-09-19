@@ -51,3 +51,22 @@ func TestAllowlist(t *testing.T) {
 		t.Errorf("no allowlist: want a guard failure, got %v", err)
 	}
 }
+
+// On a forge with projects the allowlist sees org/project: the org alone says too little.
+func TestAllowlistSeesTheProject(t *testing.T) {
+	cfg := &Config{Version: 1, OrgAllowlist: `^acme/sandbox$`, Sandboxes: map[string]Sandbox{
+		"ok":        {Forge: "azuredevops", Org: "acme", Project: "sandbox", TokenEnv: "T"},
+		"wrong":     {Forge: "azuredevops", Org: "acme", Project: "production", TokenEnv: "T"},
+		"noproject": {Forge: "azuredevops", Org: "acme", TokenEnv: "T"},
+	}}
+	if sb, err := cfg.Sandbox("ok"); err != nil || sb.BaseURL != "https://dev.azure.com" {
+		t.Errorf("ok: %+v err=%v", sb, err)
+	}
+	var guard *GuardError
+	if _, err := cfg.Sandbox("wrong"); !errors.As(err, &guard) {
+		t.Errorf("wrong project: want a guard failure, got %v", err)
+	}
+	if _, err := cfg.Sandbox("noproject"); err == nil {
+		t.Error("azuredevops without a project must be refused")
+	}
+}

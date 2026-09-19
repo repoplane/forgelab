@@ -25,3 +25,12 @@ sandboxes:
   #   forge: gitlab
   #   org: forgelab-sandbox
   #   token_env: FORGELAB_GL_TOKEN
+
+  # An Azure DevOps sandbox is a project inside an organisation; org_allowlist is matched
+  # against "org/project". Topics, visibility and the marker guard do not exist there.
+  #
+  # ado:
+  #   forge: azuredevops
+  #   org: forgelab-sandbox
+  #   project: fleet
+  #   token_env: FORGELAB_ADO_TOKEN

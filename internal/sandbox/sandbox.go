@@ -19,6 +19,7 @@ import (
 
 	"github.com/repoplane/forgelab/internal/fleet"
 	"github.com/repoplane/forgelab/internal/forge"
+	"github.com/repoplane/forgelab/internal/forge/azuredevops"
 	"github.com/repoplane/forgelab/internal/forge/forgejo"
 	"github.com/repoplane/forgelab/internal/forge/github"
 	"github.com/repoplane/forgelab/internal/forge/gitlab"
@@ -105,8 +106,12 @@ func Open(o Options) (*Env, error) {
 		if f, err = gitlab.New(sb.BaseURL, sb.Org, token, o.HTTPClient); err != nil {
 			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 		}
+	case "azuredevops":
+		if f, err = azuredevops.New(sb.BaseURL, sb.Org, sb.Project, token, o.HTTPClient); err != nil {
+			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
+		}
 	default:
-		return nil, fmt.Errorf("sandbox %q: forge %q is not supported (forgejo, github and gitlab are)", sb.Name, sb.Forge)
+		return nil, fmt.Errorf("sandbox %q: forge %q is not supported (forgejo, github, gitlab and azuredevops are)", sb.Name, sb.Forge)
 	}
 
 	return &Env{
@@ -173,7 +178,7 @@ func (e *Env) confirm() error {
 
 func (e *Env) header(verb string, n int) {
 	e.printf("\n  %s   sandbox %s · %s · %s/%s · %d repositories\n\n",
-		verb, e.Sandbox.Name, e.Sandbox.Forge, strings.TrimRight(e.Sandbox.BaseURL, "/"), e.Sandbox.Org, n)
+		verb, e.Sandbox.Name, e.Sandbox.Forge, strings.TrimRight(e.Sandbox.BaseURL, "/"), e.Sandbox.Scope(), n)
 }
 
 // forEach runs fn over items with bounded concurrency and returns the first error by index.

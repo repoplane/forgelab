@@ -4,7 +4,7 @@ Ordered. Each item says what would make it worth doing — nothing here is sched
 
 **Status: stop adding features.** forgelab covers what a pull-request-driven consumer leaves
 behind — branches, open requests, merged requests, rollbacks — on Forgejo, GitHub and GitLab, all
-verified against the live forges. The next useful thing is to wire it into a real consumer's test
+verified against the live forges. Azure DevOps too, flat: one sandbox is one project. The next useful thing is to wire it into a real consumer's test
 suite and let that decide what, if anything, below is needed.
 
 ## 1. Pull request history piles up
@@ -49,7 +49,30 @@ Facts established along the way, kept because they were expensive to learn:
 - Whatever is added must be diffed by `plan`/`apply` like any other setting, or turning it on for
   an existing fixture plans "nothing to do" and then fails its own trailing verify.
 
-## 3. GitLab subgroups
+## 3. Namespaces: GitLab subgroups and Azure DevOps projects, designed once
+
+Enterprise GitLab is deep group trees; enterprise Azure DevOps is dozens of projects. Both are the
+same gap -- a fleet that lands flat does not look like a customer -- and they sit at opposite
+ends (any depth and cheap, versus exactly one level and heavyweight), which is what makes them
+the right pair to design a hierarchy from. One design, not GitLab's first and a rework later.
+
+Working vocabulary, to be fixed in `fleet.yaml` only when this is built: **sandbox root** (a
+GitHub org, a GitLab group, an Azure DevOps org + default project), **namespace** (a path under
+it), **repo**. A namespace becomes subgroups on GitLab, its first segment a project on Azure
+DevOps, and a `-`-joined name prefix on GitHub and Forgejo.
+
+Facts already in hand for Azure DevOps (live, 2026-09-19): a repository carries no topics,
+description or properties, so nothing can hold a marker; deletion is soft with a purgeable
+recycle bin and the name is free at once; a disabled repository is listed but answers 404 to
+every read *and to its own deletion*; pull request ids are project-wide and survive purged
+repositories; whoever owns the PAT may force-push by default; and both the direct GET and the
+project listing are cached for about a second, in opposite directions (the GET keeps serving a
+deleted repository, the listing lags on new ones and on a flag just changed). Project creation is
+asynchronous and deletion is soft for 28 days, which suits "never delete a namespace".
+
+The GitLab half, as thought through so far:
+
+### GitLab subgroups
 
 **Gap.** Not in the adapter — `org` already accepts a nested group path. The limit is the model:
 one sandbox = one group, so the fleet lands flat and the sandbox does not look like a real GitLab

@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/repoplane/forgelab/internal/forge/azuredevops"
 	"github.com/repoplane/forgelab/internal/forge/github"
 	"github.com/repoplane/forgelab/internal/forge/gitlab"
 )
@@ -35,12 +36,24 @@ type Config struct {
 // Sandbox is one forge organisation. Credentials are descriptors, never values: the file
 // names an environment variable, so nothing secret is committed or passed as an argument.
 type Sandbox struct {
-	Name        string `yaml:"-"`
-	Forge       string `yaml:"forge"`
-	BaseURL     string `yaml:"base_url"`
-	Org         string `yaml:"org"` // on GitLab: the group's full path, e.g. acme-sandbox/services
+	Name    string `yaml:"-"`
+	Forge   string `yaml:"forge"`
+	BaseURL string `yaml:"base_url"`
+	Org     string `yaml:"org"` // on GitLab: the group's full path, e.g. acme-sandbox/services
+	// Project is required on Azure DevOps, where repositories live in a project inside the
+	// organisation, and unused elsewhere.
+	Project     string `yaml:"project"`
 	TokenEnv    string `yaml:"token_env"`
 	MarkerTopic string `yaml:"marker_topic"`
+}
+
+// Scope is where the sandbox writes, and what org_allowlist is matched against: the org, or
+// org/project on a forge that has projects -- there the org alone says too little.
+func (s Sandbox) Scope() string {
+	if s.Project != "" {
+		return s.Org + "/" + s.Project
+	}
+	return s.Org
 }
 
 // LoadConfig reads sandboxes.yaml.
@@ -77,7 +90,12 @@ func (c *Config) Sandbox(name string) (Sandbox, error) {
 			sb.BaseURL = github.DefaultBaseURL
 		case "gitlab":
 			sb.BaseURL = gitlab.DefaultBaseURL
+		case "azuredevops":
+			sb.BaseURL = azuredevops.DefaultBaseURL
 		}
+	}
+	if sb.Forge == "azuredevops" && sb.Project == "" {
+		return Sandbox{}, fmt.Errorf("sandbox %q: azuredevops needs a project", name)
 	}
 	if sb.Forge == "" || sb.BaseURL == "" || sb.Org == "" || sb.TokenEnv == "" {
 		return Sandbox{}, fmt.Errorf("sandbox %q: forge, base_url, org and token_env are required", name)
@@ -107,9 +125,9 @@ func (c *Config) checkAllowlist(sb Sandbox) error {
 	if err != nil {
 		return fmt.Errorf("org_allowlist: %w", err)
 	}
-	if !re.MatchString(sb.Org) {
+	if !re.MatchString(sb.Scope()) {
 		return &GuardError{Msg: fmt.Sprintf(
-			"sandbox %q: org %q does not match org_allowlist %q", sb.Name, sb.Org, c.OrgAllowlist)}
+			"sandbox %q: %q does not match org_allowlist %q", sb.Name, sb.Scope(), c.OrgAllowlist)}
 	}
 	return nil
 }

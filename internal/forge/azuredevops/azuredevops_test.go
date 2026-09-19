@@ -1,0 +1,174 @@
+package azuredevops
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/repoplane/forgelab/internal/forge"
+)
+
+var ctx = context.Background()
+
+const repos = "/acme/sandbox/_apis/git/repositories"
+
+func serve(t *testing.T, h http.HandlerFunc) (*Client, *[]string) {
+	t.Helper()
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if _, pass, _ := r.BasicAuth(); pass != "s3cret" {
+			t.Errorf("no PAT on %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("api-version") == "" {
+			t.Errorf("no api-version on %s", r.URL.Path)
+		}
+		h(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(srv.URL, "acme", "sandbox", "s3cret", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.sleep = func(context.Context, time.Duration) error { return nil }
+	return c, &seen
+}
+
+// A direct GET comes first; on a 404 the listing tells a disabled repository from a missing
+// one; and a repository whose refs are gone was deleted a moment ago, whatever the GET says.
+func TestGet(t *testing.T) {
+	lists := 0
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case repos + "/svc":
+			fmt.Fprint(w, `{"id":"1","name":"svc","defaultBranch":"refs/heads/master"}`)
+		case repos + "/svc/refs":
+			fmt.Fprint(w, `{"value":[{"name":"refs/heads/master","objectId":"abc"},{"name":"refs/heads/feature/x","objectId":"def"}]}`)
+		case repos + "/bare":
+			fmt.Fprint(w, `{"id":"2","name":"bare"}`)
+		case repos + "/bare/refs":
+			fmt.Fprint(w, `{"value":[]}`)
+		case repos + "/ghost": // deleted a second ago: the GET still answers, the refs do not
+			fmt.Fprint(w, `{"id":"4","name":"ghost"}`)
+		case repos:
+			// "lagging" was disabled a moment ago and the listing has not caught up yet
+			lists++
+			fmt.Fprintf(w, `{"value":[{"id":"3","name":"Retired","isDisabled":true},{"id":"5","name":"lagging","isDisabled":%t}]}`, lists > 2)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	r, found, err := c.Get(ctx, "svc")
+	if err != nil || !found || r.DefaultBranch != "master" || r.Archived || r.Empty {
+		t.Errorf("svc: %+v found=%t err=%v", r, found, err)
+	}
+	if r, found, _ := c.Get(ctx, "bare"); !found || !r.Empty {
+		t.Errorf("bare: %+v found=%t", r, found)
+	}
+	if r, found, err := c.Get(ctx, "retired"); err != nil || !found || !r.Archived {
+		t.Errorf("a disabled repository is found through the listing: %+v found=%t err=%v", r, found, err)
+	}
+	for _, name := range []string{"missing", "ghost"} {
+		if _, found, err := c.Get(ctx, name); found || err != nil {
+			t.Errorf("%s: found=%t err=%v", name, found, err)
+		}
+	}
+	lists = 0
+	if r, found, err := c.Get(ctx, "lagging"); err != nil || !found || !r.Archived || lists != 3 {
+		t.Errorf("a stale listing is asked again: %+v found=%t err=%v lists=%d", r, found, err, lists)
+	}
+}
+
+// A disabled repository refuses even its own deletion, and a deletion only reaches the
+// recycle bin: enable, delete, purge.
+func TestDeleteEnablesThenPurges(t *testing.T) {
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == repos:
+			fmt.Fprint(w, `{"value":[{"id":"42","name":"svc","isDisabled":true}]}`)
+		case r.Method == http.MethodGet:
+			http.NotFound(w, r) // disabled: unreadable
+		}
+	})
+	if err := c.Delete(ctx, "svc"); err != nil {
+		t.Fatal(err)
+	}
+	want := "GET " + repos + "/svc, GET " + repos + ", PATCH " + repos + "/42, DELETE " + repos + "/42, DELETE /acme/sandbox/_apis/git/recycleBin/repositories/42"
+	if got := strings.Join(*seen, ", "); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
+
+// Disabled rejects every other write: enable first, disable last, and skip what already holds.
+func TestUpdateSettingsOrder(t *testing.T) {
+	disabled := true
+	var patches []string
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if disabled && r.URL.Path != repos {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprintf(w, `{"value":[{"id":"1","name":"svc","defaultBranch":"refs/heads/main","isDisabled":%t}]}`, disabled)
+		case http.MethodPatch:
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			for k, v := range body {
+				patches = append(patches, fmt.Sprintf("%s=%v", k, v))
+			}
+		}
+	})
+	master, no, yes := "master", false, true
+	if err := c.UpdateSettings(ctx, "svc", forge.Settings{DefaultBranch: &master, Archived: &no}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UpdateSettings(ctx, "svc", forge.Settings{Archived: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(patches, ", "); got != "isDisabled=false, defaultBranch=refs/heads/master" {
+		t.Errorf("patches: %s (already disabled, so no third one)", got)
+	}
+}
+
+func TestDeleteBranchAndCloseRequest(t *testing.T) {
+	var body any
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// the filter is a prefix match: run-42-rollback must not be mistaken for run-42
+			fmt.Fprint(w, `{"value":[{"name":"refs/heads/campaign/run-42-rollback","objectId":"bbb"},{"name":"refs/heads/campaign/run-42","objectId":"aaa"}]}`)
+			return
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		fmt.Fprint(w, `{"value":[{"success":true,"updateStatus":"succeeded"}]}`)
+	})
+	if err := c.DeleteBranch(ctx, "svc", "campaign/run-42"); err != nil {
+		t.Fatal(err)
+	}
+	update := body.([]any)[0].(map[string]any)
+	if update["name"] != "refs/heads/campaign/run-42" || update["oldObjectId"] != "aaa" || update["newObjectId"] != zeroSHA {
+		t.Errorf("ref update: %+v", update)
+	}
+
+	c.CloseRequest(ctx, "svc", 7)
+	if last := (*seen)[len(*seen)-1]; last != "PATCH "+repos+"/svc/pullrequests/7" || body.(map[string]any)["status"] != "abandoned" {
+		t.Errorf("close: %s %+v", last, body)
+	}
+}
+
+func TestCapsAndGitURL(t *testing.T) {
+	c, _ := New("", "acme", "my sandbox", "s3cret", nil)
+	if caps := c.Caps(); caps.Topics || caps.Visibility || !caps.ArchivedUnreadable {
+		t.Errorf("caps: %+v", caps)
+	}
+	u, err := c.GitURL("svc")
+	if err != nil || u != "https://forgelab:s3cret@dev.azure.com/acme/my%20sandbox/_git/svc" {
+		t.Errorf("git url: %q err=%v", u, err)
+	}
+}

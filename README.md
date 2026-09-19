@@ -28,9 +28,9 @@ under you between runs.
 ForgeLab is the third option: **a real forge, plus a committed record of exactly what is supposed
 to be there.**
 
-| | Forgejo | GitHub | GitLab |
-|---|:---:|:---:|:---:|
-| Supported | ✅ | ✅ | ✅ |
+| | Forgejo | GitHub | GitLab | Azure DevOps |
+|---|:---:|:---:|:---:|:---:|
+| Supported | ✅ | ✅ | ✅ | ✅ |
 
 ## ⚡ What it looks like
 
@@ -192,6 +192,27 @@ access token limited to that group, with read/write on its *Projects* and *Repos
 endpoint. A classic token with `api` + `write_repository` also works. Since a GitLab token is only
 as narrow as its account, a dedicated account that belongs to nothing but the sandbox group is the
 safest owner for it.
+
+An Azure DevOps sandbox is a **project** inside an organisation, and the allowlist is matched
+against `org/project`:
+
+```yaml
+  ado:
+    forge: azuredevops
+    org: your-org
+    project: your-sandbox-project       # org_allowlist must match "your-org/your-sandbox-project"
+    token_env: FORGELAB_ADO_TOKEN
+```
+
+The token is a personal access token limited to that one organisation, with *Code: Read, write &
+manage* and *Project and Team: Read*. Azure DevOps is the odd one out, and `plan` says so:
+
+- Repositories have **no topics** and no visibility of their own, so those fleet settings are
+  ignored there — and with no topic to carry it, so is the marker guard: in that project a
+  repository with a declared name *is* ForgeLab's. Use a project that holds nothing else.
+- `archived: true` becomes **disabled**, which is stricter than archived: the repository is still
+  listed, but every read of it answers 404. A good edge case for whatever consumes the listing.
+- Pull request ids are unique across the project, not per repository.
 
 [`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories, each a shape that
 forge integrations trip on.
