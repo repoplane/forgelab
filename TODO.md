@@ -18,14 +18,25 @@ forge, not a GitLab special case — which is what makes it the right kind of fl
   forbids **force-push** and **deletion**, for everyone including admins. Nothing else — no
   required reviews, no status checks. The uniform observable is the branch API reporting
   `protected: true`.
+- "Nothing else" takes work on GitLab: a bare protection rule there also restricts *who may push
+  and merge* (Maintainers by default), so a Developer-role consumer token would be refused a
+  direct commit that GitHub accepts. The GitLab rule must set push and merge access to Developer
+  and `allow_force_push: false` explicitly. Check the Forgejo equivalent the same way.
 - Default stays `false` on every forge, GitLab included, so that one fleet still produces one
   lock. "Whatever the forge does by default" would make the lock forge-dependent.
 - Lock: a `protected` boolean per repo. Changes the lock bytes; consumers re-run `apply`.
-- `forge.Forge`: two methods, `Protected(name, branch) (bool, error)` and
-  `SetProtected(name, branch, on) error`. The GitLab adapter stops unprotecting inside
-  `UpdateSettings`.
+- `forge.Forge`: two methods, `Protected(ctx, name, branch) (bool, error)` and
+  `SetProtected(ctx, name, branch, on) error`. `AllowForcePush` already exists and is already
+  called right before every force-push (reset and re-seed); it becomes `SetProtected(false)`.
+  The GitLab adapter stops unprotecting inside `UpdateSettings`.
+- `plan`/`apply` must **diff** protection like any other setting (`~ protected: false → true`).
+  Otherwise turning it on for an existing fixture plans "nothing to do", writes the new lock, and
+  then fails its own trailing verify.
 - `apply`: set protection last among the settings (before archive). Around a re-seed, which is a
   force-push: unprotect → push → protect.
+- Only ever *un*protect a branch that reads as protected. On a free GitHub org the protection
+  endpoints answer 403 "Upgrade to GitHub Pro" on a private repository even for a DELETE, so a
+  blind unprotect would break every reset there; on the read path that 403 means "not protected".
 - `verify`: one more read per repo. A mismatch is **drift** (exit 1) — `reset` can repair it.
 - `reset`, for a touched repo whose refs moved: unarchive → **unprotect** → force-push → default
   branch → close requests → delete extra branches/tags → topics → **re-protect** → re-archive.
@@ -72,6 +83,10 @@ and **the same project name in two subgroups** — impossible on GitHub, and the
 depths with every name duplicated. Cost: N× the projects, one command per sandbox, subgroups
 created by hand once.
 
+**Prerequisite:** two sandboxes on the same forge is exactly the trigger for the typed
+sandbox-name confirmation on `destroy` (section 3) — `gl-core` for `gl-services` passes every
+guard. Do that first.
+
 Small helpers if that gets tedious: `--sandbox a,b`; let the GitLab adapter create a missing
 *subgroup* (allowed by the API, unlike a top-level group).
 
@@ -93,14 +108,17 @@ repositories.
 - **`visibility: internal`** (GitLab, GitHub Enterprise) — when a consumer needs the third value.
   Reject it clearly on forges that lack it rather than degrade silently.
 - **`verify --strict`** — one read-only listing of the org that fails if undeclared repositories
-  exist. Trigger: a consumer's whole-org assertions get polluted by leftovers. Reads only; the
-  "never write to what was not declared" rule stays.
+  exist. Trigger: a consumer's whole-org assertions get polluted by leftovers. Honest cost: it
+  puts a `List` on `forge.Forge`, which today deliberately has none — the guarantee weakens from
+  "cannot see what it did not declare" to "never writes to it", and the token needs to be able to
+  list the org.
 - **`forgelab lock`** — refresh `fleet.lock.json` with git alone, no forge. Trigger: booting a
   Forgejo just to refresh a file becomes annoying. (`make lock` covers the example fleet today.)
 - **`apply --prune`** — delete repositories that were in the previous lock and are no longer
   declared. Trigger: removing fixtures becomes routine.
-- **Batched lookups on GitHub (GraphQL)** — trigger: a fleet large enough that ~6 reads per
-  repository per `verify` matters against the hourly budget.
+- **Batched lookups on GitHub (GraphQL)** — trigger: a fleet large enough that the ~3 API reads
+  per repository per `verify` (plus one `git ls-remote`, which is not an API request) matter
+  against the hourly budget. At 5,000/hour that is a fleet in the hundreds.
 - **Opt-in live tests in CI** — run the walk against real GitHub/GitLab sandboxes when tokens are
   present as secrets. Trigger: a regression that the Forgejo e2e suite could not have caught.
 - **Typed sandbox-name confirmation on `destroy`** — trigger: two cloud sandboxes on the same
