@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 
@@ -46,6 +48,27 @@ type Sandbox struct {
 	Project     string `yaml:"project"`
 	TokenEnv    string `yaml:"token_env"`
 	MarkerTopic string `yaml:"marker_topic"`
+}
+
+// Names lists the sandboxes a config declares, sorted; nil if the config cannot be read. It
+// exists for shell completion, which wants names and no errors.
+func Names(fleetDir, configPath string) []string {
+	if fleetDir == "" {
+		fleetDir = "."
+	}
+	if configPath == "" {
+		configPath = filepath.Join(fleetDir, ConfigFile)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Sandboxes))
+	for name := range cfg.Sandboxes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Scope is where the sandbox writes: the org, or org/project on a forge that has projects.

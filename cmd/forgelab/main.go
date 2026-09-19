@@ -28,9 +28,12 @@ Commands:
   reset     put drifted repositories back to baseline; never creates or deletes one
   destroy   delete the declared repositories, and nothing else
   version   print the version
+  completion bash|zsh   print a shell completion script:  eval "$(forgelab completion zsh)"
 
 Flags:
 `
+
+var stderr = os.Stderr
 
 func main() { os.Exit(run(os.Args[1:])) }
 
@@ -52,12 +55,27 @@ func run(args []string) int {
 		return 2
 	}
 	command := args[0]
-	if command == "version" || command == "--version" {
+	switch command {
+	case "version", "--version":
 		fmt.Println("forgelab", version)
 		return 0
+	case "completion":
+		shell := ""
+		if len(args) > 1 {
+			shell = args[1]
+		}
+		return completion(shell)
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
+	}
+	// Hidden: the sandbox names in the config, one per line, for shell completion. It needs
+	// no token and says nothing on error -- a completion that prints errors is worse than none.
+	if command == "__sandboxes" {
+		for _, name := range sandbox.Names(o.FleetDir, o.ConfigPath) {
+			fmt.Println(name)
+		}
+		return 0
 	}
 	if o.Sandbox == "" {
 		fmt.Fprintln(os.Stderr, "forgelab: --sandbox is required")
