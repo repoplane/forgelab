@@ -18,3 +18,10 @@ sandboxes:
   #   forge: github
   #   org: forgelab-sandbox
   #   token_env: FORGELAB_GH_TOKEN          # see the README for the token to create
+
+  # A GitLab sandbox: `org` is a group's full path, and may be nested.
+  #
+  # gl:
+  #   forge: gitlab
+  #   org: forgelab-sandbox
+  #   token_env: FORGELAB_GL_TOKEN

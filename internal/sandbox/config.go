@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/repoplane/forgelab/internal/forge/github"
+	"github.com/repoplane/forgelab/internal/forge/gitlab"
 )
 
 // ConfigFile is the default name of the sandbox configuration inside a fleet directory.
@@ -37,7 +38,7 @@ type Sandbox struct {
 	Name        string `yaml:"-"`
 	Forge       string `yaml:"forge"`
 	BaseURL     string `yaml:"base_url"`
-	Org         string `yaml:"org"`
+	Org         string `yaml:"org"` // on GitLab: the group's full path, e.g. acme-sandbox/services
 	TokenEnv    string `yaml:"token_env"`
 	MarkerTopic string `yaml:"marker_topic"`
 }
@@ -69,8 +70,14 @@ func (c *Config) Sandbox(name string) (Sandbox, error) {
 	if sb.MarkerTopic == "" {
 		sb.MarkerTopic = DefaultMarkerTopic
 	}
-	if sb.Forge == "github" && sb.BaseURL == "" {
-		sb.BaseURL = github.DefaultBaseURL // only Enterprise Server needs to say otherwise
+	// Only a self-hosted GitHub or GitLab needs to say where it lives.
+	if sb.BaseURL == "" {
+		switch sb.Forge {
+		case "github":
+			sb.BaseURL = github.DefaultBaseURL
+		case "gitlab":
+			sb.BaseURL = gitlab.DefaultBaseURL
+		}
 	}
 	if sb.Forge == "" || sb.BaseURL == "" || sb.Org == "" || sb.TokenEnv == "" {
 		return Sandbox{}, fmt.Errorf("sandbox %q: forge, base_url, org and token_env are required", name)

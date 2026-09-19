@@ -30,7 +30,7 @@ to be there.**
 
 | | Forgejo | GitHub | GitLab |
 |---|:---:|:---:|:---:|
-| Supported | ✅ | ✅ | 🔜 |
+| Supported | ✅ | ✅ | ✅ |
 
 ## ⚡ What it looks like
 
@@ -174,6 +174,24 @@ export FORGELAB_GH_TOKEN=$(security find-generic-password -s forgelab-gh -w)
 
 Use an org that holds nothing else you care about, and remember that a `visibility: public`
 fixture really is public there.
+
+A GitLab sandbox is a group, addressed by its full path (`base_url` only for self-managed):
+
+```yaml
+  gl:
+    forge: gitlab
+    org: your-sandbox-group             # or a nested path: your-group/sandbox
+    token_env: FORGELAB_GL_TOKEN
+```
+
+Make the group **public** if any fixture is — a GitLab project cannot be more visible than its
+group; private projects inside a public group stay private. For the token, a fine-grained personal
+access token limited to that group, with read/write on its *Projects* and *Repository* resources
+(code, branches, tags, protected branches, merge requests) and read on *Groups* — plus the
+**user-level** permission *Project: Create*, because GitLab creates projects through a global
+endpoint. A classic token with `api` + `write_repository` also works. Since a GitLab token is only
+as narrow as its account, a dedicated account that belongs to nothing but the sandbox group is the
+safest owner for it.
 
 [`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories, each a shape that
 forge integrations trip on.
