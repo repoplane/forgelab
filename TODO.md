@@ -2,75 +2,54 @@
 
 Ordered. Each item says what would make it worth doing — nothing here is scheduled by date.
 
-## 1. Branch protection — next
+**Status: stop adding features.** forgelab covers what a pull-request-driven consumer leaves
+behind — branches, open requests, merged requests, rollbacks — on Forgejo, GitHub and GitLab, all
+verified against the live forges. The next useful thing is to wire it into a real consumer's test
+suite and let that decide what, if anything, below is needed.
 
-**Why.** Real projects protect their default branch; on GitLab it is protected the moment it is
-first pushed. forgelab currently *strips* that protection at `apply` so that `reset` can
-force-push, which means a sandbox project does not behave like a customer's: a direct or forced
-push to `main` succeeds in the sandbox and fails in the field. This is a fidelity gap on every
-forge, not a GitLab special case — which is what makes it the right kind of fleet evolution.
+## 1. Pull request history piles up
 
-**Shape.**
+`reset` rewinds `main`, closes open requests and deletes branches, but no forge lets a pull
+request be deleted: every run leaves its requests behind as closed or merged (a merged one whose
+merge commit is no longer on `main`), and numbering keeps climbing. A consumer with an org-wide
+view of "all requests / all campaigns" will see every previous run.
 
-- `fleet.yaml`: `protected: true` per repo, default `false`. Applies to the default branch only.
-  Invalid together with `empty: true` (no branch to protect).
-- Meaning, identical on all three forges: the default branch carries a protection rule that
-  forbids **force-push** and **deletion**, for everyone including admins. Nothing else — no
-  required reviews, no status checks. The uniform observable is the branch API reporting
-  `protected: true`.
-- "Nothing else" takes work on GitLab: a bare protection rule there also restricts *who may push
-  and merge* (Maintainers by default), so a Developer-role consumer token would be refused a
-  direct commit that GitHub accepts. The GitLab rule must set push and merge access to Developer
-  and `allow_force_push: false` explicitly. Check the Forgejo equivalent the same way.
-- Default stays `false` on every forge, GitLab included, so that one fleet still produces one
-  lock. "Whatever the forge does by default" would make the lock forge-dependent.
-- Lock: a `protected` boolean per repo. Changes the lock bytes; consumers re-run `apply`.
-- `forge.Forge`: two methods, `Protected(ctx, name, branch) (bool, error)` and
-  `SetProtected(ctx, name, branch, on) error`. `AllowForcePush` already exists and is already
-  called right before every force-push (reset and re-seed); it becomes `SetProtected(false)`.
-  The GitLab adapter stops unprotecting inside `UpdateSettings`.
-- `plan`/`apply` must **diff** protection like any other setting (`~ protected: false → true`).
-  Otherwise turning it on for an existing fixture plans "nothing to do", writes the new lock, and
-  then fails its own trailing verify.
-- `apply`: set protection last among the settings (before archive). Around a re-seed, which is a
-  force-push: unprotect → push → protect.
-- Only ever *un*protect a branch that reads as protected. On a free GitHub org the protection
-  endpoints answer 403 "Upgrade to GitHub Pro" on a private repository even for a DELETE, so a
-  blind unprotect would break every reset there; on the read path that 403 means "not protected".
-- `verify`: one more read per repo. A mismatch is **drift** (exit 1) — `reset` can repair it.
-- `reset`, for a touched repo whose refs moved: unarchive → **unprotect** → force-push → default
-  branch → close requests → delete extra branches/tags → topics → **re-protect** → re-archive.
-  Still declarative: a reset that dies between unprotect and re-protect leaves "unprotected, want
-  protected", which the next `verify` reports and the next `reset` fixes.
+- **Default answer, no code:** the consumer tags what it creates with a run id it controls — a
+  branch prefix, a label — and filters on it. That is also just realistic: a customer's org is
+  full of old and unrelated requests, and telling "this campaign's" apart from the rest is the
+  consumer's job. Never assert on a number or on a count.
+- **When a suite needs a clean slate:** `destroy` + `apply` (about 50 s on GitHub, 20 s on GitLab,
+  at twelve repositories). History gone, numbering back at #1 — and repository ids change.
+- Possible later, only if that becomes routine: `reset --recreate <name>`, deleting and re-creating
+  one repository. It breaks the rule that reset never creates or deletes, so it needs a real need.
 
-**Decide before coding.**
+## 2. Merge requirements (was: branch protection)
 
-1. Is "no force-push, no deletion" the right meaning, or should `protected` also block direct
-   pushes (require a pull/merge request)? The second is closer to real-world setups but its
-   effect depends on the role of the *consumer's* token, so it is harder to make uniform.
-2. **GitHub Free does not allow branch protection on private repositories** — *confirmed against
-   the live API on a free org (2026-09-19)*. On a private repo both the classic protection
-   endpoint and the rulesets endpoint (even listing) answer 403 "Upgrade to GitHub Pro or make
-   this repository public to enable this feature"; on a public repo both work. So on a free org
-   a protected fixture must be `visibility: public`, or the org needs a paid plan. `apply` must
-   turn that 403 into a sentence saying exactly this.
+Demoted. The earlier design made `protected: true` mean "no force-push, no deletion" — behaviour
+a consumer that only works through pull requests never exercises. What such a consumer *does*
+meet at a customer is a merge it cannot complete: required reviews, required status checks. That
+is a different feature (it needs a second identity to approve, or a check to report), and it
+waits for a consumer test that needs "merge blocked" as a state.
 
-   Also confirmed on the public probe, with classic protection (`enforce_admins: true`,
-   `allow_force_pushes: false`): an **admin** token is refused a force-push ("Cannot
-   force-push to this branch"), a direct commit to `main` is still accepted, and after removing
-   the protection the force-push goes through. That is precisely the proposed meaning, and it
-   proves `reset` needs the unprotect → push → re-protect dance on GitHub too. Use the classic
-   endpoint rather than rulesets: one call, and the branch API reports `protected: true`.
-3. Protection rules a *test* adds on other branches (GitLab wildcards, extra GitHub rules) block
-   `reset` from deleting those branches. v1: fail with a clear message, or remove every rule
-   except the default branch's?
-4. Which example fixtures become `protected: true`. Probably most of them, since that is what
-   real projects look like — subject to (2).
+forgelab's own need is already met: `AllowForcePush` lifts whatever protects a default branch
+right before `reset` rewinds it.
 
-**Verify with.** Forgejo e2e (force-push to a protected `main` is refused; `reset` still restores
-it), then a live run on GitHub and GitLab.
+Facts established along the way, kept because they were expensive to learn:
 
-## 2. GitLab subgroups
+- **GitHub Free refuses branch protection on private repositories** (live, free org, 2026-09-19):
+  the classic endpoint and rulesets — even listing, even DELETE — answer 403 "Upgrade to GitHub
+  Pro or make this repository public". Public repositories accept both. So on a free org anything
+  protection-based needs `visibility: public` or a paid plan, and a blind "unprotect" would break
+  every reset of a private repository: only unprotect what reads as protected.
+- On a public repository with classic protection (`enforce_admins: true`, force-pushes off), an
+  **admin** token is refused a force-push, a direct commit to `main` is still accepted, and
+  removing the protection lets the force-push through.
+- A bare GitLab protection rule also restricts who may push and merge (Maintainers). Matching the
+  other forges means setting push and merge access levels explicitly.
+- Whatever is added must be diffed by `plan`/`apply` like any other setting, or turning it on for
+  an existing fixture plans "nothing to do" and then fails its own trailing verify.
+
+## 3. GitLab subgroups
 
 **Gap.** Not in the adapter — `org` already accepts a nested group path. The limit is the model:
 one sandbox = one group, so the fleet lands flat and the sandbox does not look like a real GitLab
@@ -84,7 +63,7 @@ depths with every name duplicated. Cost: N× the projects, one command per sandb
 created by hand once.
 
 **Prerequisite:** two sandboxes on the same forge is exactly the trigger for the typed
-sandbox-name confirmation on `destroy` (section 3) — `gl-core` for `gl-services` passes every
+sandbox-name confirmation on `destroy` (section 4) — `gl-core` for `gl-services` passes every
 guard. Do that first.
 
 Small helpers if that gets tedious: `--sandbox a,b`; let the GitLab adapter create a missing
@@ -103,7 +82,7 @@ could not be tested on every commit the way the Forgejo one is. Also out of scop
 members and permissions, shared groups, group settings, group tokens — forgelab is about
 repositories.
 
-## 3. Smaller, each waiting for its trigger
+## 4. Smaller, each waiting for its trigger
 
 - **`visibility: internal`** (GitLab, GitHub Enterprise) — when a consumer needs the third value.
   Reject it clearly on forges that lack it rather than degrade silently.

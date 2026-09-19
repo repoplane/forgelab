@@ -242,9 +242,12 @@ named in `sandboxes.yaml` — never from a file or a flag.
 | `1` | **drift** — commits, branches, tags, open pull requests, settings | `reset`, retry once |
 | `2` | **guard failure** — repo missing, not ForgeLab's, baseline or fleet changed | stop, look |
 
-What `reset` cannot restore: closed pull requests and their numbers — request numbers only ever go
-up, so never assert on one — and a `no-commits` repo that was pushed to (delete it on the forge,
-then `apply`).
+What `reset` cannot restore: pull requests themselves. It rewinds `main` after a merge, closes
+what is open and deletes the branches, but no forge deletes a pull request — each run leaves its
+requests behind as closed or merged, and numbering keeps climbing. Tag what your tests create with
+a run id you control (a branch prefix, a label) and filter on it; never assert on a number or a
+count. For a truly clean slate, `destroy` then `apply`. It also cannot empty a `no-commits` repo
+that was pushed to: delete it on the forge, then `apply`.
 
 ## 🛠 Development
 
