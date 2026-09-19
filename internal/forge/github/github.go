@@ -257,13 +257,24 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 
 // Create ignores defaultBranch: GitHub takes none at creation. The first branch pushed
 // becomes the default, and UpdateSettings pins it afterwards.
-func (c *Client) Create(ctx context.Context, name, visibility, _ string) error {
+func (c *Client) Create(ctx context.Context, name, visibility, _ string, topics []string) error {
 	_, err := c.do(ctx, http.MethodPost, "/orgs/"+url.PathEscape(c.org)+"/repos", map[string]any{
 		"name":      name,
 		"private":   visibility == "private",
 		"auto_init": false,
 	}, nil)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := c.SetTopics(ctx, name, topics); err != nil {
+		// Created a moment ago by this very call, so removing it loses nothing -- and leaving
+		// it would strand an unmarked repository that apply refuses to adopt.
+		if derr := c.Delete(ctx, name); derr != nil {
+			return fmt.Errorf("set topics: %w (and the new repository could not be removed: %v)", err, derr)
+		}
+		return fmt.Errorf("set topics: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) Delete(ctx context.Context, name string) error {
@@ -327,10 +338,6 @@ func (c *Client) refs(ctx context.Context, name, kind string) ([]forge.Ref, erro
 
 func (c *Client) Branches(ctx context.Context, name string) ([]forge.Ref, error) {
 	return c.refs(ctx, name, "heads")
-}
-
-func (c *Client) Tags(ctx context.Context, name string) ([]forge.Ref, error) {
-	return c.refs(ctx, name, "tags")
 }
 
 func (c *Client) DeleteBranch(ctx context.Context, name, branch string) error {

@@ -124,6 +124,44 @@ func ResetToBaseline(ctx context.Context, pushURL, branch string, tags []string)
 	return nil
 }
 
+// LsRemote reads a repository's branches and tags straight from git, as name -> commit SHA.
+//
+// This, not a forge's branch and tag listings, is what the sandbox is compared against:
+// those listings are caches, and at least one forge serves them stale for seconds after a
+// write -- long enough for a verify run right after a test to miss a pushed commit. git has
+// no such window, answers the same way on every forge, and returns both kinds of ref in one
+// round trip. An annotated tag is reported at the commit it points to.
+func LsRemote(ctx context.Context, remoteURL string) (branches, tags map[string]string, err error) {
+	work, err := os.MkdirTemp("", "forgelab-ls-")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer os.RemoveAll(work)
+
+	out, err := git(ctx, work, gitEnv(fleet.GitIdentity{}), remoteURL, "ls-remote", "--heads", "--tags", remoteURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	branches, tags = map[string]string{}, map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		sha, ref, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(ref, "refs/heads/"):
+			branches[strings.TrimPrefix(ref, "refs/heads/")] = sha
+		case strings.HasSuffix(ref, "^{}"): // the peeled line follows the tag's own and wins
+			tags[strings.TrimSuffix(strings.TrimPrefix(ref, "refs/tags/"), "^{}")] = sha
+		case strings.HasPrefix(ref, "refs/tags/"):
+			if _, peeled := tags[strings.TrimPrefix(ref, "refs/tags/")]; !peeled {
+				tags[strings.TrimPrefix(ref, "refs/tags/")] = sha
+			}
+		}
+	}
+	return branches, tags, nil
+}
+
 // gitEnv builds the environment from scratch rather than inheriting it. Any GIT_DIR,
 // GIT_WORK_TREE, GIT_INDEX_FILE or GIT_OBJECT_DIRECTORY in the caller's environment would
 // redirect these commands at the caller's own repository -- which happens for real inside

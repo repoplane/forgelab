@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/repoplane/forgelab/internal/forge"
 )
 
 var ctx = context.Background()
@@ -140,7 +142,36 @@ func TestRateLimits(t *testing.T) {
 	})
 }
 
+// Create has to leave the repository marked. GitHub takes no topics at creation, so they are
+// set next -- and if that fails, what was just created is removed rather than stranded.
+func TestCreateSetsTopicsOrRollsBack(t *testing.T) {
+	failTopics := false
+	var seen []string
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if failTopics && strings.HasSuffix(r.URL.Path, "/topics") {
+			http.Error(w, `{"message":"nope"}`, http.StatusUnprocessableEntity)
+		}
+	})
+
+	if err := c.Create(ctx, "svc", "private", "main", []string{"forgelab-managed"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(seen, ", "); got != "POST /orgs/acme-sandbox/repos, PUT /repos/acme-sandbox/svc/topics" {
+		t.Errorf("create: %s", got)
+	}
+
+	failTopics, seen = true, nil
+	if err := c.Create(ctx, "svc", "private", "main", []string{"forgelab-managed"}); err == nil {
+		t.Fatal("want an error when the topics cannot be set")
+	}
+	if last := seen[len(seen)-1]; last != "DELETE /repos/acme-sandbox/svc" {
+		t.Errorf("the unmarked repository must be removed, last request was %s", last)
+	}
+}
+
 func TestRequestsAndGitURL(t *testing.T) {
+	private := "private"
 	var got struct {
 		method, path, auth string
 		body               map[string]any
@@ -151,10 +182,10 @@ func TestRequestsAndGitURL(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&got.body)
 	})
 
-	c.Create(ctx, "svc", "private", "master")
-	if got.method != "POST" || got.path != "/orgs/acme-sandbox/repos" || got.body["private"] != true ||
-		got.body["auto_init"] != false || got.auth != "Bearer s3cret" {
-		t.Errorf("create: %+v", got)
+	c.UpdateSettings(ctx, "svc", forge.Settings{Visibility: &private})
+	if got.method != "PATCH" || got.path != "/repos/acme-sandbox/svc" || got.body["private"] != true ||
+		got.auth != "Bearer s3cret" {
+		t.Errorf("settings: %+v", got)
 	}
 	c.SetTopics(ctx, "svc", []string{"a"})
 	if got.method != "PUT" || got.path != "/repos/acme-sandbox/svc/topics" || got.body["names"] == nil {

@@ -179,11 +179,15 @@ func (e *Env) diffOne(ctx context.Context, c *change) error {
 		c.push = true // created by an interrupted apply, never seeded
 		return nil
 	}
-	tags, err := e.Forge.Tags(ctx, want.Name)
+	url, err := e.Forge.GitURL(want.Name)
 	if err != nil {
 		return err
 	}
-	c.push = !slices.Contains(tags, forge.Ref{Name: seed.BaselineTag, SHA: c.built.SHA})
+	_, tags, err := seed.LsRemote(ctx, url)
+	if err != nil {
+		return err
+	}
+	c.push = tags[seed.BaselineTag] != c.built.SHA
 	return nil
 }
 
@@ -192,13 +196,11 @@ func (e *Env) applyOne(ctx context.Context, c *change) error {
 	name := want.Name
 
 	if c.create {
-		if err := e.Forge.Create(ctx, name, want.Visibility, want.DefaultBranch); err != nil {
+		// The marker goes on with the creation, before any content: an interrupted apply
+		// leaves repositories behind, and the re-run has to recognise them as its own.
+		topics := withMarker(want.Topics, e.Sandbox.MarkerTopic)
+		if err := e.Forge.Create(ctx, name, want.Visibility, want.DefaultBranch, topics); err != nil {
 			return fmt.Errorf("create: %w", err)
-		}
-		// The marker goes on immediately, before any content: an interrupted apply leaves
-		// repositories behind, and the re-run has to recognise them as its own.
-		if err := e.Forge.SetTopics(ctx, name, withMarker(want.Topics, e.Sandbox.MarkerTopic)); err != nil {
-			return fmt.Errorf("set topics: %w", err)
 		}
 	}
 

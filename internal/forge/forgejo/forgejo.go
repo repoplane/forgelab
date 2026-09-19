@@ -170,14 +170,25 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 	return r, true, nil
 }
 
-func (c *Client) Create(ctx context.Context, name, visibility, defaultBranch string) error {
+func (c *Client) Create(ctx context.Context, name, visibility, defaultBranch string, topics []string) error {
 	_, err := c.do(ctx, http.MethodPost, "/orgs/"+url.PathEscape(c.org)+"/repos", map[string]any{
 		"name":           name,
 		"auto_init":      false,
 		"default_branch": defaultBranch,
 		"private":        visibility == "private",
 	}, nil)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := c.SetTopics(ctx, name, topics); err != nil {
+		// Created a moment ago by this very call, so removing it loses nothing -- and leaving
+		// it would strand an unmarked repository that apply refuses to adopt.
+		if derr := c.Delete(ctx, name); derr != nil {
+			return fmt.Errorf("set topics: %w (and the new repository could not be removed: %v)", err, derr)
+		}
+		return fmt.Errorf("set topics: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) Delete(ctx context.Context, name string) error {
@@ -225,24 +236,6 @@ func (c *Client) Branches(ctx context.Context, name string) ([]forge.Ref, error)
 	var out []forge.Ref
 	for _, b := range items {
 		out = append(out, forge.Ref{Name: b.Name, SHA: b.Commit.ID})
-	}
-	return out, nil
-}
-
-func (c *Client) Tags(ctx context.Context, name string) ([]forge.Ref, error) {
-	type tag struct {
-		Name   string `json:"name"`
-		Commit struct {
-			SHA string `json:"sha"`
-		} `json:"commit"`
-	}
-	items, err := list[tag](ctx, c, c.repoPath(name)+"/tags")
-	if err != nil {
-		return nil, err
-	}
-	var out []forge.Ref
-	for _, t := range items {
-		out = append(out, forge.Ref{Name: t.Name, SHA: t.Commit.SHA})
 	}
 	return out, nil
 }

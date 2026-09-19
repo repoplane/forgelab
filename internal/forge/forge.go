@@ -46,14 +46,20 @@ type Forge interface {
 	// Get reports found=false for a missing repository AND for one that answers under a
 	// different name (forges redirect the old name of a renamed repository).
 	Get(ctx context.Context, name string) (r Repo, found bool, err error)
-	Create(ctx context.Context, name, visibility, defaultBranch string) error
+	// Create must not return success with the topics unset: they carry the marker that
+	// tells forgelab the repository is its own, and an unmarked repository is one that a
+	// re-run of apply will refuse to touch. A forge that cannot set them in the same call
+	// sets them next, and deletes what it just created if that fails.
+	Create(ctx context.Context, name, visibility, defaultBranch string, topics []string) error
 	Delete(ctx context.Context, name string) error
 
 	UpdateSettings(ctx context.Context, name string, s Settings) error
 	SetTopics(ctx context.Context, name string, topics []string) error
 
+	// Branches is the forge's own listing. It is only used to wait until the forge has
+	// caught up with a push, which is what a consumer reading the API will see; the
+	// comparison against the lock reads refs from git instead (seed.LsRemote).
 	Branches(ctx context.Context, name string) ([]Ref, error)
-	Tags(ctx context.Context, name string) ([]Ref, error)
 	DeleteBranch(ctx context.Context, name, branch string) error
 	DeleteTag(ctx context.Context, name, tag string) error
 

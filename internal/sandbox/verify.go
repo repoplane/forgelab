@@ -83,7 +83,8 @@ func (e *Env) Verify(ctx context.Context) error {
 	return nil
 }
 
-// compare looks every declared repository up by name: about five reads each, no writes.
+// compare looks every declared repository up by name: a few API reads and one git
+// ls-remote each, no writes.
 func (e *Env) compare(ctx context.Context, lock *fleet.Lock) (report, error) {
 	rep := make(report, len(lock.Repos))
 	for i, want := range lock.Repos {
@@ -143,56 +144,52 @@ func (e *Env) compareOne(ctx context.Context, s *state) error {
 		s.drift = append(s.drift, fmt.Sprintf("default branch is %s, want %s", live.DefaultBranch, want.DefaultBranch))
 	}
 
-	tags, err := e.Forge.Tags(ctx, want.Name)
+	// Refs come from git, not from the forge's listings, which can lag behind a write.
+	url, err := e.Forge.GitURL(want.Name)
 	if err != nil {
 		return err
 	}
-	baselineOK := false
-	for _, t := range tags {
-		switch {
-		case t.Name == seed.BaselineTag:
-			baselineOK = t.SHA == want.Baseline
-		case !slices.Contains(want.Tags, t.Name):
-			s.extraTags = append(s.extraTags, t.Name)
-			s.drift = append(s.drift, "extra tag "+t.Name)
-		case t.SHA != want.Baseline:
-			s.refsDirty = true
-			s.drift = append(s.drift, "tag "+t.Name+" moved")
-		}
+	branches, tags, err := seed.LsRemote(ctx, url)
+	if err != nil {
+		return err
 	}
-	if !baselineOK {
+
+	if tags[seed.BaselineTag] != want.Baseline {
 		s.guards = append(s.guards, fmt.Sprintf("tag %s is missing or is not %s: run `forgelab apply --sandbox %s`",
 			seed.BaselineTag, short(want.Baseline), e.Sandbox.Name))
 		return nil
 	}
+	for _, t := range sortedKeys(tags) {
+		switch {
+		case t == seed.BaselineTag:
+		case !slices.Contains(want.Tags, t):
+			s.extraTags = append(s.extraTags, t)
+			s.drift = append(s.drift, "extra tag "+t)
+		case tags[t] != want.Baseline:
+			s.refsDirty = true
+			s.drift = append(s.drift, "tag "+t+" moved")
+		}
+	}
 	for _, t := range want.Tags {
-		if !slices.ContainsFunc(tags, func(r forge.Ref) bool { return r.Name == t }) {
+		if _, ok := tags[t]; !ok {
 			s.refsDirty = true
 			s.drift = append(s.drift, "tag "+t+" is missing")
 		}
 	}
 
-	branches, err := e.Forge.Branches(ctx, want.Name)
-	if err != nil {
-		return err
-	}
-	headOK := false
-	for _, b := range branches {
-		if b.Name != want.DefaultBranch {
-			s.extraBranches = append(s.extraBranches, b.Name)
-			s.drift = append(s.drift, "extra branch "+b.Name)
-			continue
-		}
-		headOK = b.SHA == want.Baseline
-		if !headOK {
-			s.drift = append(s.drift, fmt.Sprintf("%s is at %s, want %s", b.Name, short(b.SHA), short(want.Baseline)))
+	for _, b := range sortedKeys(branches) {
+		if b != want.DefaultBranch {
+			s.extraBranches = append(s.extraBranches, b)
+			s.drift = append(s.drift, "extra branch "+b)
 		}
 	}
-	if !headOK {
+	switch head, ok := branches[want.DefaultBranch]; {
+	case !ok:
 		s.refsDirty = true
-		if !slices.ContainsFunc(branches, func(r forge.Ref) bool { return r.Name == want.DefaultBranch }) {
-			s.drift = append(s.drift, "branch "+want.DefaultBranch+" is missing")
-		}
+		s.drift = append(s.drift, "branch "+want.DefaultBranch+" is missing")
+	case head != want.Baseline:
+		s.refsDirty = true
+		s.drift = append(s.drift, fmt.Sprintf("%s is at %s, want %s", want.DefaultBranch, short(head), short(want.Baseline)))
 	}
 
 	s.requests, err = e.Forge.OpenRequests(ctx, want.Name)
@@ -218,7 +215,8 @@ func (e *Env) waitReady(ctx context.Context, repos []fleet.LockRepo) error {
 		if want.Empty {
 			return nil
 		}
-		for {
+		// Quick first looks for a local forge, backing off to a second for a hosted one.
+		for pause := 25 * time.Millisecond; ; pause = min(pause*2, time.Second) {
 			branches, err := e.Forge.Branches(ctx, want.Name)
 			if err == nil && slices.Contains(branches, forge.Ref{Name: want.DefaultBranch, SHA: want.Baseline}) {
 				return nil
@@ -232,10 +230,19 @@ func (e *Env) waitReady(ctx context.Context, repos []fleet.LockRepo) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(25 * time.Millisecond):
+			case <-time.After(pause):
 			}
 		}
 	})
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func withoutMarker(topics []string, marker string) []string {
