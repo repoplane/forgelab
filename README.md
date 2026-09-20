@@ -160,11 +160,12 @@ where it can, and what it cannot hold is joined with `-`:
 | `services/api` | `<group>/services/api` | `services/_git/api` | `services-api` |
 | `platform/core/api` | `<group>/platform/core/api` | `platform/_git/core-api` | `platform-core-api` |
 
-`apply` creates the subgroups and projects it needs, and writes `forgelab-managed` into their
+`apply` creates the subgroups and projects it needs, with `forgelab-managed` as their
 description: they have no topics, so that is their marker. `destroy` removes them again, deepest
 first, but only those that carry the marker **and** are left with nothing at all inside — a
 subgroup or project somebody else made is never removed, and anything undeclared keeps a namespace
-alive — and never the sandbox's own group, org or project. On a sandbox with no declared
+alive — and never the sandbox's own group or org. (An Azure DevOps `default_project` is a
+project like the others: made by `apply`, removed by `destroy` under the same two conditions.) On a sandbox with no declared
 repository left, `destroy` asks nothing: all it can remove then is its own empty namespaces. Two paths that join to the same name
 (`a-b/c` and `a/b-c`) are refused on every forge, so a fleet never works on one forge only.
 
@@ -228,24 +229,25 @@ also works. Since a GitLab token is only
 as narrow as its account, a dedicated account that belongs to nothing but the sandbox group is the
 safest owner for it.
 
-An Azure DevOps sandbox is an organisation and its default **project**, which must exist: it is
-where repositories without a namespace go. A namespace's first directory is a project of its own:
+An Azure DevOps sandbox is an organisation. Every repository there lives in a project:
+`default_project` names the one for repositories without a namespace, and a namespace's first
+directory is a project of its own. ForgeLab creates them all, the default one included:
 
 ```yaml
   ado:
     forge: azuredevops
     org: your-org
-    project: your-sandbox-project
+    default_project: fleet
     token_env: FORGELAB_ADO_TOKEN
 ```
 
 The token is a personal access token limited to that one organisation, with *Code: Read, write &
-manage* and *Project and Team: Read* — or *Read, write & manage* for a fleet with namespaces,
-whose projects ForgeLab creates and deletes (a few seconds each). Azure DevOps is the odd one out, and `plan` says so:
+manage* and *Project and Team: Read, write & manage*: ForgeLab creates and deletes the projects
+(a few seconds each). Azure DevOps is the odd one out, and `plan` says so:
 
 - Repositories have **no topics** and no visibility of their own, so those fleet settings are
-  ignored there — and with no topic to carry it, so is the marker guard: in that project a
-  repository with a declared name *is* ForgeLab's. Use a project that holds nothing else.
+  ignored there — and with no topic to carry it, so is the marker guard: in those projects a
+  repository with a declared name *is* ForgeLab's. Use an organisation that holds nothing else.
 - `archived: true` becomes **disabled**, which is stricter than archived: the repository is still
   listed, but every read of it answers 404. A good edge case for whatever consumes the listing.
 - Pull request ids are unique across the project, not per repository.

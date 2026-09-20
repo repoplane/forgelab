@@ -221,7 +221,7 @@ func (c *Client) groupOf(ctx context.Context, ns string, create bool) (groupInfo
 		}
 		_, err = c.do(ctx, http.MethodPost, "/groups", map[string]any{
 			"name": leaf, "path": leaf, "parent_id": parent.ID, "visibility": parent.Visibility,
-			"description": forge.NamespaceDescription,
+			"description": forge.NamespaceMarker,
 		}, &g)
 		if err != nil {
 			return groupInfo{}, false, fmt.Errorf("create subgroup %s: %w", full, err)
@@ -356,6 +356,9 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 // deletes in the background: a project deleted a moment ago is still listed, and a subgroup
 // still there would keep its parent.
 func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, error) {
+	if ns == "" {
+		return false, "", nil // the sandbox's own group
+	}
 	c.groups.Lock()
 	defer c.groups.Unlock()
 	g, found, err := c.groupOf(ctx, ns, false)

@@ -105,7 +105,7 @@ func Open(o Options) (*Env, error) {
 			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 		}
 	case "azuredevops":
-		if f, err = azuredevops.New(sb.BaseURL, sb.Org, sb.Project, token, o.HTTPClient); err != nil {
+		if f, err = azuredevops.New(sb.BaseURL, sb.Org, sb.DefaultProject, token, o.HTTPClient); err != nil {
 			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 		}
 	default:

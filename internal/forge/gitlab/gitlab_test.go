@@ -249,8 +249,8 @@ func TestCreateMakesSubgroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []map[string]any{
-		{"name": "platform", "path": "platform", "parent_id": float64(7), "visibility": "public", "description": forge.NamespaceDescription},
-		{"name": "core", "path": "core", "parent_id": float64(8), "visibility": "public", "description": forge.NamespaceDescription},
+		{"name": "platform", "path": "platform", "parent_id": float64(7), "visibility": "public", "description": forge.NamespaceMarker},
+		{"name": "core", "path": "core", "parent_id": float64(8), "visibility": "public", "description": forge.NamespaceMarker},
 	}
 	if len(posts) != 4 || fmt.Sprint(posts[:2]) != fmt.Sprint(want) {
 		t.Errorf("subgroups: %v", posts)
@@ -265,7 +265,7 @@ func TestCreateMakesSubgroups(t *testing.T) {
 
 func TestDeleteNamespace(t *testing.T) {
 	const core = "/api/v4/groups/acme-sandbox%2Fservices%2Fcore"
-	const ours = `"description":"forgelab-managed: created by ..."`
+	const ours = `"description":"forgelab-managed"`
 	for name, tc := range map[string]struct {
 		group, projects string
 		removed         bool

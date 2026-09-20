@@ -211,7 +211,7 @@ func TestCreateMakesProject(t *testing.T) {
 		t.Fatalf("bodies=%v polls=%d\n%s", bodies, polls, strings.Join(*seen, "\n"))
 	}
 	caps := bodies[0]["capabilities"].(map[string]any)
-	if bodies[0]["name"] != "platform" || bodies[0]["description"] != forge.NamespaceDescription || caps["processTemplate"].(map[string]any)["templateTypeId"] != "agile" ||
+	if bodies[0]["name"] != "platform" || bodies[0]["description"] != forge.NamespaceMarker || caps["processTemplate"].(map[string]any)["templateTypeId"] != "agile" ||
 		caps["versioncontrol"].(map[string]any)["sourceControlType"] != "Git" {
 		t.Errorf("project: %+v", bodies[0])
 	}
@@ -241,7 +241,7 @@ func TestGetInMissingProject(t *testing.T) {
 }
 
 func TestDeleteNamespace(t *testing.T) {
-	const ours = `{"id":"p9","description":"forgelab-managed: created by ..."}`
+	const ours = `{"id":"p9","description":"forgelab-managed"}`
 	for name, tc := range map[string]struct {
 		project, repos string
 		removed        bool
@@ -283,15 +283,15 @@ func TestDeleteNamespace(t *testing.T) {
 		}
 	}
 
-	// Deeper than a project there is nothing to remove, and the sandbox's own project stays.
+	// Deeper than a project there is nothing to remove; "" is the default project.
 	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
-	for _, ns := range []string{"platform/core", "sandbox", "gone"} {
+	for _, ns := range []string{"platform/core", "", "gone"} {
 		if removed, kept, err := c.DeleteNamespace(ctx, ns); removed || kept != "" || err != nil {
 			t.Errorf("%s: removed=%t kept=%q err=%v", ns, removed, kept, err)
 		}
 	}
-	if len(*seen) != 1 {
-		t.Errorf("only the missing project is looked up: %v", *seen)
+	if want := "GET /acme/_apis/projects/sandbox\nGET /acme/_apis/projects/gone"; strings.Join(*seen, "\n") != want {
+		t.Errorf("only projects are looked up: %v", *seen)
 	}
 }
 
@@ -306,5 +306,36 @@ func TestCreateConflictInExistingProject(t *testing.T) {
 	})
 	if err := c.Create(ctx, "platform/platform", "", "", nil); err == nil {
 		t.Error("a conflict in a project that was already there must surface")
+	}
+}
+
+// The default project is made like any other, by the first repository without a namespace.
+func TestCreateMakesDefaultProject(t *testing.T) {
+	var posts []string
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost:
+			posts = append(posts, r.URL.Path)
+			fmt.Fprint(w, `{"id":"op1"}`)
+		case r.URL.Path == "/acme/_apis/projects/sandbox" && len(posts) == 0:
+			http.NotFound(w, r)
+		case r.URL.Path == "/acme/_apis/projects/sandbox":
+			fmt.Fprint(w, `{"id":"p1"}`)
+		case r.URL.Path == "/acme/_apis/process/processes":
+			fmt.Fprint(w, `{"value":[{"id":"agile","isDefault":true}]}`)
+		case r.URL.Path == "/acme/_apis/operations/op1":
+			fmt.Fprint(w, `{"id":"op1","status":"succeeded"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	if _, found, err := c.Get(ctx, "dotfiles"); found || err != nil {
+		t.Errorf("before its project exists a repository is missing: found=%t err=%v", found, err)
+	}
+	if err := c.Create(ctx, "dotfiles", "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/acme/_apis/projects /acme/sandbox/_apis/git/repositories"; strings.Join(posts, " ") != want {
+		t.Errorf("posts: %v", posts)
 	}
 }

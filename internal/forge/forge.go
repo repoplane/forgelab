@@ -53,12 +53,9 @@ type Caps struct {
 // AnyDepth is a NamespaceDepth without a limit.
 const AnyDepth = -1
 
-// NamespaceMarker opens the description of every namespace Create makes. Groups and projects
+// NamespaceMarker is the description of every namespace Create makes. Groups and projects
 // carry no topics, so this is what tells DeleteNamespace that one is forgelab's to remove.
 const NamespaceMarker = "forgelab-managed"
-
-// NamespaceDescription is that description in full.
-const NamespaceDescription = NamespaceMarker + ": created by `forgelab apply`, removed by `forgelab destroy` once empty."
 
 // Settings is a partial update: nil fields are left alone.
 type Settings struct {
@@ -97,7 +94,9 @@ type Forge interface {
 	Delete(ctx context.Context, name string) error
 	// DeleteNamespace removes a namespace, but only one that carries the NamespaceMarker and
 	// has nothing at all left in it; otherwise kept says why it was left alone. A namespace
-	// that does not exist is neither removed nor kept.
+	// that does not exist is neither removed nor kept. The namespace "" is where repositories
+	// without one live: removable where forgelab makes it (an Azure DevOps default project),
+	// and otherwise the sandbox itself, which is never touched.
 	DeleteNamespace(ctx context.Context, ns string) (removed bool, kept string, err error)
 
 	UpdateSettings(ctx context.Context, name string, s Settings) error

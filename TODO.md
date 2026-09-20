@@ -57,7 +57,8 @@ namespace, and a repository is its path (`platform/core/api`) everywhere -- over
 reports, the `Forge` interface. No new key in `fleet.yaml`, nothing new in `sandboxes.yaml`. Each
 forge lands the path where it can: subgroups on GitLab (any depth), the first segment a project
 on Azure DevOps and the rest `-`-joined, all of it `-`-joined on GitHub and Forgejo. `apply`
-creates the namespaces inside `Create`, marked `forgelab-managed` in their description; `destroy`
+creates the namespaces inside `Create` -- the Azure DevOps `default_project` included -- with
+`forgelab-managed` as their description; `destroy`
 removes those that carry the marker and are left with nothing at all in them (`DeleteNamespace`),
 never the sandbox root. The same leaf name in two namespaces -- the classic
 "keyed by name" bug -- is in the example fleet.

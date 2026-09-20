@@ -66,11 +66,21 @@ func (e *Env) Destroy(ctx context.Context) error {
 			}
 		}
 	}
+	// Where a forge makes the home of the repositories without a namespace, that goes last.
+	if e.Sandbox.DefaultProject != "" {
+		namespaces = append(namespaces, "")
+	}
+	label := func(ns string) string {
+		if ns == "" {
+			return e.Sandbox.DefaultProject + "/"
+		}
+		return ns + "/"
+	}
 	// No question without a repository to lose. What is left to remove then is empty
 	// namespaces of forgelab's own making, which is how an interrupted destroy is finished.
 	if len(doomed) > 0 {
 		for _, ns := range namespaces {
-			e.printf("  - %-28s namespace: only if forgelab made it, and it is left empty\n", ns+"/")
+			e.printf("  - %-28s namespace: only if forgelab made it, and it is left empty\n", label(ns))
 		}
 		e.printf("\n  Deletion cannot be undone: pull requests, issue numbers and history go with them.\n")
 		e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Scope())
@@ -103,13 +113,13 @@ func (e *Env) Destroy(ctx context.Context) error {
 			}
 			if gone {
 				removed++
-				e.printf("  - %-28s namespace removed\n", ns+"/")
+				e.printf("  - %-28s namespace removed\n", label(ns))
 			}
 			why = reason
 		}
 		if why != "" {
 			kept = append(kept, ns)
-			e.printf("  ! %-28s kept: %s\n", ns+"/", why)
+			e.printf("  ! %-28s kept: %s\n", label(ns), why)
 		}
 	}
 	switch {

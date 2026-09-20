@@ -32,8 +32,9 @@ const (
 	zeroSHA          = "0000000000000000000000000000000000000000"
 )
 
-// Client talks to one organisation. Repositories without a namespace live in its project;
-// a namespace's first segment names another project, and the rest is joined into the name.
+// Client talks to one organisation. Repositories without a namespace live in its default
+// project; a namespace's first segment names another project, and the rest is joined into the
+// name. Every project is made by Create when first needed, the default one included.
 type Client struct {
 	baseURL string
 	org     string
@@ -175,16 +176,18 @@ func git(project, suffix string) string {
 	return "/" + url.PathEscape(project) + "/_apis/git" + suffix
 }
 
-// EnsureOrg checks the sandbox's project exists. That one is never created, and never deleted.
+// EnsureOrg checks the organisation answers to this token: an organisation cannot be created
+// through the API. Projects are made by Create.
 func (c *Client) EnsureOrg(ctx context.Context) error {
-	c.projects.Lock()
-	defer c.projects.Unlock()
-	_, _, err := c.projectIdent(ctx, c.project, false)
+	_, err := c.do(ctx, http.MethodGet, "/_apis/projects", "$top=1", nil, nil)
+	if hasStatus(err, http.StatusNotFound) {
+		return fmt.Errorf("organisation %q does not exist, or the token cannot see it", c.org)
+	}
 	return err
 }
 
-// projectIdent resolves a project to its id; the caller holds c.projects. The sandbox's own
-// project must exist. Another that is missing is reported as such, or with create is made.
+// projectIdent resolves a project to its id; the caller holds c.projects. One that is missing
+// is reported as such, or with create is made.
 func (c *Client) projectIdent(ctx context.Context, project string, create bool) (string, bool, error) {
 	if id, ok := c.projects.ids[project]; ok {
 		return id, true, nil
@@ -201,8 +204,6 @@ func (c *Client) projectIdent(ctx context.Context, project string, create bool) 
 	case err == nil:
 	case !hasStatus(err, http.StatusNotFound):
 		return "", false, err
-	case project == c.project:
-		return "", false, fmt.Errorf("project %q does not exist in organisation %q, or the token cannot see it", project, c.org)
 	case !create:
 		return "", false, nil
 	default:
@@ -248,7 +249,7 @@ func (c *Client) createProject(ctx context.Context, project string) error {
 	var op operation
 	_, err := c.do(ctx, http.MethodPost, "/_apis/projects", "", map[string]any{
 		"name":        project,
-		"description": forge.NamespaceDescription,
+		"description": forge.NamespaceMarker,
 		"visibility":  "private",
 		"capabilities": map[string]any{
 			"versioncontrol":  map[string]any{"sourceControlType": "Git"},
@@ -323,9 +324,8 @@ func (c *Client) lookup(ctx context.Context, name string) (repository, bool, err
 			Value []repository `json:"value"`
 		}
 		if _, err := c.do(ctx, http.MethodGet, git(project, "/repositories"), "", nil, &all); err != nil {
-			// A namespace's project may not exist yet: Create makes it. The sandbox's own must.
-			if hasStatus(err, http.StatusNotFound) && project != c.project {
-				return repository{}, false, nil
+			if hasStatus(err, http.StatusNotFound) {
+				return repository{}, false, nil // no such project yet: Create makes it
 			}
 			return repository{}, false, err
 		}
@@ -420,11 +420,14 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 
 // DeleteNamespace removes a project forgelab made, once it holds nothing but the empty
 // repository it was born with. Only the first segment of a namespace is a project (see
-// Caps), and the sandbox's own is never removed. The listing is read a few times over: it
-// lags on a repository deleted a moment ago.
+// Caps), and "" is the default one. The listing is read a few times over: it lags on a
+// repository deleted a moment ago.
 func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, error) {
-	if strings.Contains(ns, "/") || strings.EqualFold(ns, c.project) {
+	if strings.Contains(ns, "/") {
 		return false, "", nil
+	}
+	if ns == "" {
+		ns = c.project
 	}
 	c.projects.Lock()
 	defer c.projects.Unlock()
