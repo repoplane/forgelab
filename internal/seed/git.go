@@ -49,7 +49,7 @@ func (b *Built) Close() {
 // increasing one, so a repository's SHA is a function of its own content alone. Adding a
 // new fixture therefore cannot change any existing repository's SHA.
 func Build(ctx context.Context, fsys fs.FS, r fleet.Repo, id fleet.GitIdentity) (*Built, error) {
-	work, err := os.MkdirTemp("", "forgelab-"+r.Name+"-")
+	work, err := os.MkdirTemp("", "forgelab-"+strings.ReplaceAll(r.Name, "/", "-")+"-")
 	if err != nil {
 		return nil, err
 	}

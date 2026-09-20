@@ -127,7 +127,8 @@ Log in as `labadmin` / `labadmin-not-a-secret` to see the private repositories.
 my-fleet/
 ├── fleet.yaml          pinned git identity, defaults, per-repo overrides
 ├── repos/
-│   └── <name>/         one directory per repository — the listing IS the fleet
+│   ├── <name>/         one directory per repository — the tree IS the fleet
+│   └── <namespace>/    a directory holding only directories; repositories nest below, any depth
 ├── sandboxes.yaml      where to apply it
 └── fleet.lock.json     resolved settings + baseline commit SHAs; written by apply; commit it
 ```
@@ -147,6 +148,22 @@ repos:
   tagged:        {tags: [v1, v2]}
   public:        {visibility: public}
 ```
+
+A directory that holds a file is a repository; one that holds only directories is a
+**namespace**. A repository is its path — `platform/core/api` in the lock, the reports and the
+`repos:` overrides — so the same leaf name can live in two namespaces. Each forge lands the path
+where it can, and what it cannot hold is joined with `-`:
+
+| `repos/…` | GitLab | Azure DevOps | GitHub · Forgejo |
+|---|---|---|---|
+| `dotfiles` | `<group>/dotfiles` | `<project>/_git/dotfiles` | `dotfiles` |
+| `services/api` | `<group>/services/api` | `services/_git/api` | `services-api` |
+| `platform/core/api` | `<group>/platform/core/api` | `platform/_git/core-api` | `platform-core-api` |
+
+`apply` creates the subgroups and projects it needs. `destroy` removes them again, deepest first,
+but only those left with **nothing at all** inside — anything it did not declare keeps a namespace
+alive — and never the sandbox's own group, org or project. Two paths that join to the same name
+(`a-b/c` and `a/b-c`) are refused on every forge, so a fleet never works on one forge only.
 
 `sandboxes.yaml` says where it goes. The org is only reachable through here — there is no
 `--org` flag to mistype:
@@ -201,11 +218,15 @@ group; private projects inside a public group stay private. For the token, a fin
 access token limited to that group, with read/write on its *Projects* and *Repository* resources
 (code, branches, tags, protected branches, merge requests) and read on *Groups* — plus the
 **user-level** permission *Project: Create*, because GitLab creates projects through a global
-endpoint. A classic token with `api` + `write_repository` also works. Since a GitLab token is only
+endpoint. *Code* (download and push) is a permission of its own, apart from the repository ones:
+without it every git operation answers 403. A fleet with namespaces also needs the user-level
+*Group* permission to make subgroups, and the Owner role on the group for `destroy` to remove them. A classic token with `api` + `write_repository`
+also works. Since a GitLab token is only
 as narrow as its account, a dedicated account that belongs to nothing but the sandbox group is the
 safest owner for it.
 
-An Azure DevOps sandbox is a **project** inside an organisation:
+An Azure DevOps sandbox is an organisation and its default **project**, which must exist: it is
+where repositories without a namespace go. A namespace's first directory is a project of its own:
 
 ```yaml
   ado:
@@ -216,7 +237,8 @@ An Azure DevOps sandbox is a **project** inside an organisation:
 ```
 
 The token is a personal access token limited to that one organisation, with *Code: Read, write &
-manage* and *Project and Team: Read*. Azure DevOps is the odd one out, and `plan` says so:
+manage* and *Project and Team: Read* — or *Read, write & manage* for a fleet with namespaces,
+whose projects ForgeLab creates and deletes (a few seconds each). Azure DevOps is the odd one out, and `plan` says so:
 
 - Repositories have **no topics** and no visibility of their own, so those fleet settings are
   ignored there — and with no topic to carry it, so is the marker guard: in that project a
@@ -224,9 +246,11 @@ manage* and *Project and Team: Read*. Azure DevOps is the odd one out, and `plan
 - `archived: true` becomes **disabled**, which is stricter than archived: the repository is still
   listed, but every read of it answers 404. A good edge case for whatever consumes the listing.
 - Pull request ids are unique across the project, not per repository.
+- A new project is born with an empty repository of its own name. ForgeLab leaves it alone, and it
+  does not keep `destroy` from removing the project.
 
-[`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories, each a shape that
-forge integrations trip on.
+[`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories at the root, each a
+shape that forge integrations trip on, and three more in namespaces.
 
 | Fixture | Shape |
 |---|---|
@@ -239,9 +263,12 @@ forge integrations trip on.
 | `public` | the one public repository |
 | `dotfiles` | everything under dot-prefixed paths |
 | `billing-api` · `ledger-worker` · `node-gateway` · `parser-svc` | plain services, with topics |
+| `services/api` · `platform/core/api` | the same leaf name in two namespaces, one of them deep |
+| `platform/tooling` | a repository next to a namespace |
 
-Twelve is chosen for its divisors: list the fleet with a page size of 12, 6, 5, 4, 3 or 1 and you
-get an exact single page, exact multiples, a short tail and a deep cursor chain.
+Twelve is chosen for its divisors: list the root with a page size of 12, 6, 5, 4, 3 or 1 and you
+get an exact single page, exact multiples, a short tail and a deep cursor chain. Where namespaces
+are only name prefixes (GitHub, Forgejo) the listing holds all fifteen.
 
 ## 🧭 How it behaves
 

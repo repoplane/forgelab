@@ -115,7 +115,7 @@ func list[T any](ctx context.Context, c *Client, path string) ([]T, error) {
 }
 
 func (c *Client) repoPath(name string) string {
-	return "/repos/" + url.PathEscape(c.org) + "/" + url.PathEscape(name)
+	return "/repos/" + url.PathEscape(c.org) + "/" + url.PathEscape(forge.FlatName(name))
 }
 
 // Caps: everything forgelab declares has a home here.
@@ -148,7 +148,7 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 		return forge.Repo{}, false, err
 	}
 	// A renamed repository's old name redirects to it. That is not the repository asked for.
-	if !strings.EqualFold(raw.Name, name) {
+	if !strings.EqualFold(raw.Name, forge.FlatName(name)) {
 		return forge.Repo{}, false, nil
 	}
 
@@ -175,7 +175,7 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 
 func (c *Client) Create(ctx context.Context, name, visibility, defaultBranch string, topics []string) error {
 	_, err := c.do(ctx, http.MethodPost, "/orgs/"+url.PathEscape(c.org)+"/repos", map[string]any{
-		"name":           name,
+		"name":           forge.FlatName(name),
 		"auto_init":      false,
 		"default_branch": defaultBranch,
 		"private":        visibility == "private",
@@ -198,6 +198,9 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	_, err := c.do(ctx, http.MethodDelete, c.repoPath(name), nil, nil)
 	return err
 }
+
+// DeleteNamespace has nothing to remove: a namespace is only a prefix of the name here.
+func (c *Client) DeleteNamespace(context.Context, string) (bool, error) { return false, nil }
 
 func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settings) error {
 	fields := map[string]any{}
@@ -291,7 +294,7 @@ func (c *Client) GitURL(name string) (string, error) {
 		return "", fmt.Errorf("base URL %q has no scheme or host", c.baseURL)
 	}
 	u.User = url.UserPassword("forgelab", c.token)
-	u.Path = strings.TrimRight(u.Path, "/") + "/" + c.org + "/" + name + ".git"
+	u.Path = strings.TrimRight(u.Path, "/") + "/" + c.org + "/" + forge.FlatName(name) + ".git"
 	return u.String(), nil
 }
 

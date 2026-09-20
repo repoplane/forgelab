@@ -172,3 +172,122 @@ func TestCapsAndGitURL(t *testing.T) {
 		t.Errorf("git url: %q err=%v", u, err)
 	}
 }
+
+// A namespace's first segment is a project and the rest joins the name. The project is made
+// on the way to the first repository that needs it, and that is waited for.
+func TestCreateMakesProject(t *testing.T) {
+	var bodies []map[string]any
+	polls := 0
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost:
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			bodies = append(bodies, body)
+			fmt.Fprint(w, `{"id":"op1","status":"queued"}`)
+		case r.URL.Path == "/acme/_apis/projects/platform" && len(bodies) == 0:
+			http.NotFound(w, r)
+		case r.URL.Path == "/acme/_apis/projects/platform":
+			fmt.Fprint(w, `{"id":"p9"}`)
+		case r.URL.Path == "/acme/_apis/process/processes":
+			fmt.Fprint(w, `{"value":[{"id":"scrum"},{"id":"agile","isDefault":true}]}`)
+		case r.URL.Path == "/acme/_apis/operations/op1":
+			if polls++; polls == 1 {
+				fmt.Fprint(w, `{"id":"op1","status":"inProgress"}`)
+				return
+			}
+			fmt.Fprint(w, `{"id":"op1","status":"succeeded"}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	})
+	if err := c.Create(ctx, "platform/core/api", "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, "platform/tooling", "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 3 || polls != 2 {
+		t.Fatalf("bodies=%v polls=%d\n%s", bodies, polls, strings.Join(*seen, "\n"))
+	}
+	caps := bodies[0]["capabilities"].(map[string]any)
+	if bodies[0]["name"] != "platform" || caps["processTemplate"].(map[string]any)["templateTypeId"] != "agile" ||
+		caps["versioncontrol"].(map[string]any)["sourceControlType"] != "Git" {
+		t.Errorf("project: %+v", bodies[0])
+	}
+	if bodies[1]["name"] != "core-api" || bodies[1]["project"].(map[string]any)["id"] != "p9" || bodies[2]["name"] != "tooling" {
+		t.Errorf("repositories: %+v", bodies[1:])
+	}
+	if last := (*seen)[len(*seen)-1]; last != "POST /acme/platform/_apis/git/repositories" {
+		t.Errorf("last: %s", last)
+	}
+
+	u, err := c.GitURL("platform/core/api")
+	if err != nil || !strings.HasSuffix(u, "/acme/platform/_git/core-api") {
+		t.Errorf("git url: %q err=%v", u, err)
+	}
+	// sandbox/x and x would be the same repository
+	if _, _, err := c.Get(ctx, "Sandbox/x"); err == nil || !strings.Contains(err.Error(), "own project") {
+		t.Errorf("want the namespace refused, got %v", err)
+	}
+}
+
+// Before its project exists, a repository is simply missing.
+func TestGetInMissingProject(t *testing.T) {
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
+	if _, found, err := c.Get(ctx, "platform/api"); found || err != nil {
+		t.Errorf("found=%t err=%v", found, err)
+	}
+}
+
+func TestDeleteNamespace(t *testing.T) {
+	for name, tc := range map[string]struct {
+		repos   string
+		kept    bool
+		deleted bool
+	}{
+		"born-with repository only": {repos: `{"value":[{"id":"1","name":"Platform"}]}`, deleted: true},
+		"something else":            {repos: `{"value":[{"id":"1","name":"platform"},{"id":"2","name":"scratch"}]}`, kept: true},
+		"born-with, but pushed to":  {repos: `{"value":[{"id":"1","name":"pushed"}]}`, kept: true},
+	} {
+		project := "platform"
+		if strings.Contains(tc.repos, "pushed") {
+			project = "pushed"
+		}
+		deleted := false
+		c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodDelete && r.URL.Path == "/acme/_apis/projects/p9":
+				deleted = true
+				fmt.Fprint(w, `{"id":"op1"}`)
+			case r.URL.Path == "/acme/_apis/projects/"+project:
+				fmt.Fprint(w, `{"id":"p9"}`)
+			case r.URL.Path == "/acme/"+project+"/_apis/git/repositories":
+				fmt.Fprint(w, tc.repos)
+			case strings.HasSuffix(r.URL.Path, "/pushed/refs"):
+				fmt.Fprint(w, `{"value":[{"name":"refs/heads/main","objectId":"abc"}]}`)
+			case strings.HasSuffix(r.URL.Path, "/refs"):
+				fmt.Fprint(w, `{"value":[]}`)
+			case r.URL.Path == "/acme/_apis/operations/op1":
+				fmt.Fprint(w, `{"id":"op1","status":"succeeded"}`)
+			default:
+				t.Errorf("%s: unexpected %s %s", name, r.Method, r.URL.Path)
+			}
+		})
+		kept, err := c.DeleteNamespace(ctx, project)
+		if err != nil || kept != tc.kept || deleted != tc.deleted {
+			t.Errorf("%s: kept=%t deleted=%t err=%v", name, kept, deleted, err)
+		}
+	}
+
+	// Deeper than a project there is nothing to remove, and the sandbox's own project stays.
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
+	for _, ns := range []string{"platform/core", "sandbox", "gone"} {
+		if kept, err := c.DeleteNamespace(ctx, ns); kept || err != nil {
+			t.Errorf("%s: kept=%t err=%v", ns, kept, err)
+		}
+	}
+	if len(*seen) != 1 {
+		t.Errorf("only the missing project is looked up: %v", *seen)
+	}
+}

@@ -204,4 +204,11 @@ func TestRequestsAndGitURL(t *testing.T) {
 	if err != nil || u != "https://x-access-token:s3cret@github.com/acme-sandbox/svc.git" {
 		t.Errorf("git url: %q err=%v", u, err)
 	}
+
+	// There is nowhere to put a namespace, so it is joined into the name.
+	c.SetTopics(ctx, "platform/core/api", nil)
+	u, _ = c.GitURL("platform/core/api")
+	if got.path != "/repos/acme-sandbox/platform-core-api/topics" || !strings.HasSuffix(u, "/acme-sandbox/platform-core-api.git") {
+		t.Errorf("namespaced: %s %q", got.path, u)
+	}
 }

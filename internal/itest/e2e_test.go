@@ -65,8 +65,8 @@ func TestWalk(t *testing.T) {
 	if err := l.env().Plan(ctx); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	if got := strings.Count(l.out.String(), "  + "); got != 12 {
-		t.Fatalf("plan: want 12 creates, got %d:\n%s", got, l.out)
+	if got := strings.Count(l.out.String(), "  + "); got != 15 {
+		t.Fatalf("plan: want 15 creates, got %d:\n%s", got, l.out)
 	}
 	if _, err := os.Stat(lockPath); err == nil {
 		t.Error("plan wrote the lock; it must not write anything")
@@ -103,7 +103,7 @@ func TestWalk(t *testing.T) {
 	if err := l.env().Reset(ctx); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	if !strings.Contains(l.out.String(), "3 of 12 repositories reset") {
+	if !strings.Contains(l.out.String(), "3 of 15 repositories reset") {
 		t.Errorf("reset output:\n%s", l.out)
 	}
 	if err := l.env().Verify(ctx); err != nil {

@@ -45,7 +45,8 @@ type Sandbox struct {
 	BaseURL string `yaml:"base_url"`
 	Org     string `yaml:"org"` // on GitLab: the group's full path, e.g. acme-sandbox/services
 	// Project is required on Azure DevOps, where repositories live in a project inside the
-	// organisation, and unused elsewhere.
+	// organisation, and unused elsewhere. It holds the repositories without a namespace; a
+	// namespace names a project of its own.
 	Project     string `yaml:"project"`
 	TokenEnv    string `yaml:"token_env"`
 	MarkerTopic string `yaml:"marker_topic"`

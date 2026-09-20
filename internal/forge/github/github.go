@@ -203,7 +203,7 @@ func list[T any](ctx context.Context, c *Client, path string) ([]T, error) {
 }
 
 func (c *Client) repoPath(name string) string {
-	return "/repos/" + url.PathEscape(c.org) + "/" + url.PathEscape(name)
+	return "/repos/" + url.PathEscape(c.org) + "/" + url.PathEscape(forge.FlatName(name))
 }
 
 // Caps: everything forgelab declares has a home here.
@@ -234,7 +234,7 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 	}
 	// GitHub redirects a renamed repository's old name to it. That is not the repository
 	// that was asked for.
-	if !strings.EqualFold(raw.Name, name) {
+	if !strings.EqualFold(raw.Name, forge.FlatName(name)) {
 		return forge.Repo{}, false, nil
 	}
 
@@ -262,7 +262,7 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 // becomes the default, and UpdateSettings pins it afterwards.
 func (c *Client) Create(ctx context.Context, name, visibility, _ string, topics []string) error {
 	_, err := c.do(ctx, http.MethodPost, "/orgs/"+url.PathEscape(c.org)+"/repos", map[string]any{
-		"name":      name,
+		"name":      forge.FlatName(name),
 		"private":   visibility == "private",
 		"auto_init": false,
 	}, nil)
@@ -287,6 +287,9 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	}
 	return err
 }
+
+// DeleteNamespace has nothing to remove: a namespace is only a prefix of the name here.
+func (c *Client) DeleteNamespace(context.Context, string) (bool, error) { return false, nil }
 
 func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settings) error {
 	fields := map[string]any{}
@@ -387,7 +390,7 @@ func (c *Client) GitURL(name string) (string, error) {
 		return "", err
 	}
 	u.User = url.UserPassword("x-access-token", c.token)
-	u.Path = strings.TrimRight(u.Path, "/") + "/" + c.org + "/" + name + ".git"
+	u.Path = strings.TrimRight(u.Path, "/") + "/" + c.org + "/" + forge.FlatName(name) + ".git"
 	return u.String(), nil
 }
 

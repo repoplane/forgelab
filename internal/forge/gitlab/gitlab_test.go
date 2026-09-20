@@ -41,25 +41,32 @@ func TestGet(t *testing.T) {
 		}
 		switch r.URL.EscapedPath() {
 		case svc:
-			fmt.Fprint(w, `{"path":"svc","default_branch":"main","visibility":"private","archived":true,"empty_repo":false,"topics":["a"]}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/svc","default_branch":"main","visibility":"private","archived":true,"empty_repo":false,"topics":["a"]}`)
 		// just pushed: empty_repo has not caught up, the repository has
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Ffresh":
-			fmt.Fprint(w, `{"path":"fresh","visibility":"public","empty_repo":true}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/fresh","visibility":"public","empty_repo":true}`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Ffresh/repository/branches":
 			fmt.Fprint(w, `[{"name":"main","commit":{"id":"abc"}}]`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Fbare":
-			fmt.Fprint(w, `{"path":"bare","visibility":"private","empty_repo":true}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/bare","visibility":"private","empty_repo":true}`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Fbare/repository/branches":
 			fmt.Fprint(w, `[]`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Fold-name":
-			fmt.Fprint(w, `{"path":"new-name"}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/new-name"}`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Fdoomed":
-			fmt.Fprint(w, `{"path":"doomed","marked_for_deletion_on":"2026-09-26"}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/doomed","marked_for_deletion_on":"2026-09-26"}`)
+		// a namespace is more of the same path; its leaf alone says nothing
+		case "/api/v4/projects/acme-sandbox%2Fservices%2Fcore%2Fapi":
+			fmt.Fprint(w, `{"path":"api","path_with_namespace":"acme-sandbox/services/core/api","visibility":"private"}`)
 		default:
 			http.NotFound(w, r)
 		}
 	})
 
+	if r, found, err := c.Get(ctx, "core/api"); err != nil || !found || r.Name != "core/api" {
+		t.Errorf("core/api: %+v found=%t err=%v", r, found, err)
+	}
+	*seen = nil
 	r, found, err := c.Get(ctx, "svc")
 	if err != nil || !found || r.Visibility != "private" || !r.Archived || r.Empty || len(r.Topics) != 1 {
 		t.Errorf("svc: %+v found=%t err=%v", r, found, err)
@@ -215,5 +222,82 @@ func TestRateLimitIsWaitedOut(t *testing.T) {
 	})
 	if err := c.SetTopics(ctx, "svc", nil); err != nil || calls != 2 {
 		t.Errorf("calls=%d err=%v", calls, err)
+	}
+}
+
+// A namespace is a chain of subgroups: made on the way to the first project that needs
+// them, each as visible as its parent, and never looked up twice.
+func TestCreateMakesSubgroups(t *testing.T) {
+	var posts []map[string]any
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v4/groups/acme-sandbox/services":
+			fmt.Fprint(w, `{"id":7,"visibility":"public"}`)
+		case r.Method == http.MethodGet:
+			http.NotFound(w, r)
+		default:
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			posts = append(posts, body)
+			fmt.Fprintf(w, `{"id":%d,"visibility":"public"}`, 7+len(posts))
+		}
+	})
+	if err := c.Create(ctx, "platform/core/api", "private", "main", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, "platform/core/cli", "private", "main", nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []map[string]any{
+		{"name": "platform", "path": "platform", "parent_id": float64(7), "visibility": "public"},
+		{"name": "core", "path": "core", "parent_id": float64(8), "visibility": "public"},
+	}
+	if len(posts) != 4 || fmt.Sprint(posts[:2]) != fmt.Sprint(want) {
+		t.Errorf("subgroups: %v", posts)
+	}
+	if posts[2]["path"] != "api" || posts[2]["namespace_id"] != float64(9) || posts[3]["namespace_id"] != float64(9) {
+		t.Errorf("projects: %v", posts[2:])
+	}
+	if n := strings.Count(strings.Join(*seen, "\n"), "GET "); n != 3 {
+		t.Errorf("want one lookup per group, got %d:\n%s", n, strings.Join(*seen, "\n"))
+	}
+}
+
+func TestDeleteNamespace(t *testing.T) {
+	const core = "/api/v4/groups/acme-sandbox%2Fservices%2Fcore"
+	for name, tc := range map[string]struct {
+		projects string
+		kept     bool
+		deletes  int
+	}{
+		"empty":     {projects: `[]`, deletes: 2},
+		"not empty": {projects: `[{"id":1}]`, kept: true},
+	} {
+		deletes := 0
+		c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodDelete:
+				deletes++
+			case r.URL.EscapedPath() == core:
+				fmt.Fprint(w, `{"id":9}`)
+			case r.URL.Path == "/api/v4/groups/9/projects":
+				fmt.Fprint(w, tc.projects)
+			case r.URL.Path == "/api/v4/groups/9/subgroups":
+				fmt.Fprint(w, `[]`)
+			case deletes == 1: // scheduled only: the second DELETE makes it real
+				fmt.Fprint(w, `{"full_path":"acme-sandbox/services/core","marked_for_deletion_on":"2026-09-26"}`)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		kept, err := c.DeleteNamespace(ctx, "core")
+		if err != nil || kept != tc.kept || deletes != tc.deletes {
+			t.Errorf("%s: kept=%t deletes=%d err=%v", name, kept, deletes, err)
+		}
+	}
+
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
+	if kept, err := c.DeleteNamespace(ctx, "gone"); kept || err != nil || len(*seen) != 1 {
+		t.Errorf("a missing namespace is not an error: kept=%t err=%v %v", kept, err, *seen)
 	}
 }

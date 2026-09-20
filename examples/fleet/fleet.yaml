@@ -50,3 +50,11 @@ repos:
 
   parser-svc:
     topics: [service]
+
+  # Namespaces are directories that hold only directories. They land as subgroups on GitLab,
+  # as a project (then a "-"-joined name) on Azure DevOps, and as a "-"-joined name elsewhere:
+  # platform/core/api is <group>/platform/core/api, platform/_git/core-api, platform-core-api.
+  services/api:
+    topics: [service]
+  platform/core/api:
+    topics: [service, platform]

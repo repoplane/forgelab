@@ -10,7 +10,8 @@ import (
 
 // Destroy deletes the declared repositories that carry the marker topic, and nothing else:
 // not undeclared repositories, not a same-named repository forgelab did not create, and
-// not the organisation.
+// not the organisation. The namespaces they sat in go too, deepest first, but only those
+// left with nothing at all in them.
 func (e *Env) Destroy(ctx context.Context) error {
 	spec, err := fleet.LoadSpec(e.fsys)
 	if err != nil {
@@ -54,12 +55,25 @@ func (e *Env) Destroy(ctx context.Context) error {
 			e.printf("  ! %-28s left alone: %s\n", t.name, t.skip)
 		}
 	}
-	if len(doomed) == 0 {
+	// Asked for even when no repository is left, so that an interrupted destroy is finished
+	// by running it again.
+	var namespaces []string
+	if e.Forge.Caps().Namespaces {
+		namespaces = spec.Namespaces()
+	}
+	if len(doomed) == 0 && len(namespaces) == 0 {
 		e.printf("  nothing to delete\n\n")
 		return nil
 	}
-	e.printf("\n  Deletion cannot be undone: pull requests, issue numbers and history go with them.\n")
-	e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Scope())
+	for _, ns := range namespaces {
+		e.printf("  - %-28s namespace, removed only if left empty\n", ns+"/")
+	}
+	if len(doomed) == 0 {
+		e.printf("\n  No declared repository is left. Anything else in %s is left alone.\n", e.Sandbox.Scope())
+	} else {
+		e.printf("\n  Deletion cannot be undone: pull requests, issue numbers and history go with them.\n")
+		e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Scope())
+	}
 	if err := e.confirm(); err != nil {
 		return err
 	}
@@ -72,6 +86,16 @@ func (e *Env) Destroy(ctx context.Context) error {
 	})
 	if err != nil {
 		return err
+	}
+	// One at a time: a namespace is empty only once the ones below it are gone.
+	for _, ns := range namespaces {
+		kept, err := e.Forge.DeleteNamespace(ctx, ns)
+		if err != nil {
+			return fmt.Errorf("delete namespace %s: %w", ns, err)
+		}
+		if kept {
+			e.printf("  ! %-28s kept: not empty\n", ns+"/")
+		}
 	}
 	e.printf("ok: %d repositories deleted\n", len(doomed))
 	return nil

@@ -4,7 +4,8 @@ Ordered. Each item says what would make it worth doing — nothing here is sched
 
 **Status: stop adding features.** forgelab covers what a pull-request-driven consumer leaves
 behind — branches, open requests, merged requests, rollbacks — on Forgejo, GitHub and GitLab, all
-verified against the live forges. Azure DevOps too, flat: one sandbox is one project. The next useful thing is to wire it into a real consumer's test
+verified against the live forges, and on Azure DevOps. Namespaces (section 3) are built and
+verified live on GitHub, GitLab and Azure DevOps. The next useful thing is to wire it into a real consumer's test
 suite and let that decide what, if anything, below is needed.
 
 ## 1. Pull request history piles up
@@ -49,17 +50,37 @@ Facts established along the way, kept because they were expensive to learn:
 - Whatever is added must be diffed by `plan`/`apply` like any other setting, or turning it on for
   an existing fixture plans "nothing to do" and then fails its own trailing verify.
 
-## 3. Namespaces: GitLab subgroups and Azure DevOps projects, designed once
+## 3. Namespaces: GitLab subgroups and Azure DevOps projects
 
-Enterprise GitLab is deep group trees; enterprise Azure DevOps is dozens of projects. Both are the
-same gap -- a fleet that lands flat does not look like a customer -- and they sit at opposite
-ends (any depth and cheap, versus exactly one level and heavyweight), which is what makes them
-the right pair to design a hierarchy from. One design, not GitLab's first and a rework later.
+**Built**, as one design for both: a directory under `repos/` that holds only directories is a
+namespace, and a repository is its path (`platform/core/api`) everywhere -- overrides, lock,
+reports, the `Forge` interface. No new key in `fleet.yaml`, nothing new in `sandboxes.yaml`. Each
+forge lands the path where it can: subgroups on GitLab (any depth), the first segment a project
+on Azure DevOps and the rest `-`-joined, all of it `-`-joined on GitHub and Forgejo. `apply`
+creates the namespaces inside `Create`; `destroy` removes those left with nothing at all in them
+(`DeleteNamespace`), never the sandbox root. The same leaf name in two namespaces -- the classic
+"keyed by name" bug -- is in the example fleet.
 
-Working vocabulary, to be fixed in `fleet.yaml` only when this is built: **sandbox root** (a
-GitHub org, a GitLab group, an Azure DevOps org + default project), **namespace** (a path under
-it), **repo**. A namespace becomes subgroups on GitLab, its first segment a project on Azure
-DevOps, and a `-`-joined name prefix on GitHub and Forgejo.
+**Verified live on Azure DevOps (2026-09-20):** two projects created inside a 15-second `apply`
+of fifteen repositories; `destroy` removed both in six seconds; the names were free for a
+re-create at once, soft delete or not; a project holding an undeclared repository was kept, and
+removed by the next `destroy` once that repository was gone; the born-with repository is left
+alone and does not keep a project.
+
+**Verified live on gitlab.com (2026-09-20):** three subgroups created, each as public as the
+group above it, inside a 15-second `apply`; `destroy` removed repositories and subgroups in 21
+seconds and the re-seed landed on the same paths at once, so `permanently_remove` does free a
+subgroup's path the same day; a subgroup holding an undeclared project was kept, **and still
+kept while that project was only pending deletion** (GitLab renames it
+`scratch-deletion_scheduled-<id>` and goes on listing it), then removed by the next `destroy`
+once the project was gone for good. A fine-grained token needs, beyond the README's list, the
+user-level *Group* permission (or `POST /groups` answers 403) and the project permission *Code*,
+which is separate from the repository ones (or every git operation answers 403).
+
+**Verified live on github.com (2026-09-20):** the three namespaced fixtures land as
+`platform-core-api`, `platform-tooling` and `services-api`, reports keep the fleet path
+(`platform/core/api: extra branch stray`), drift on one is reset, and `destroy` asks nothing about
+namespaces there.
 
 Facts already in hand for Azure DevOps (live, 2026-09-19): a repository carries no topics,
 description or properties, so nothing can hold a marker; deletion is soft with a purgeable
@@ -67,43 +88,13 @@ recycle bin and the name is free at once; a disabled repository is listed but an
 every read *and to its own deletion*; pull request ids are project-wide and survive purged
 repositories; whoever owns the PAT may force-push by default; and both the direct GET and the
 project listing are cached for about a second, in opposite directions (the GET keeps serving a
-deleted repository, the listing lags on new ones and on a flag just changed). Project creation is
-asynchronous and deletion is soft for 28 days, which suits "never delete a namespace".
+deleted repository, the listing lags on new ones and on a flag just changed).
 
-The GitLab half, as thought through so far:
-
-### GitLab subgroups
-
-**Gap.** Not in the adapter — `org` already accepts a nested group path. The limit is the model:
-one sandbox = one group, so the fleet lands flat and the sandbox does not look like a real GitLab
-tree. What a consumer trips on: depth (`include_subgroups`, three-segment `path_with_namespace`),
-and **the same project name in two subgroups** — impossible on GitHub, and the classic
-"keyed by name" bug.
-
-**Now, no code: one sandbox per subgroup.** `gl-services` → `group/services`, `gl-core` →
-`group/platform/teams/core`, same fleet applied to both. A scan of the root sees projects at two
-depths with every name duplicated. Cost: N× the projects, one command per sandbox, subgroups
-created by hand once.
-
-**Prerequisite:** two sandboxes on the same forge is exactly the trigger for the typed
-sandbox-name confirmation on `destroy` (section 4) — `gl-core` for `gl-services` passes every
-guard. Do that first.
-
-Small helpers if that gets tedious: `--sandbox a,b`; let the GitLab adapter create a missing
-*subgroup* (allowed by the API, unlike a top-level group).
-
-**Later, only on a concrete need: nested `repos/` directories.** `repos/services/billing-api/`
-becomes subgroup `services` under the sandbox's group — relative paths, no scope map. Trigger: a
-consumer needs *one* fleet with different content at different depths. Known costs: flat forges
-must use the leaf name and reject collisions, so a fleet using duplicate names stops being
-portable; subgroups can be created but never safely deleted (groups have no topics to carry the
-marker); the token needs group-creation rights.
-
-**Not doing.** A separate GitLab-only example fleet or format dialect: one fleet producing a
-byte-identical lock on three forges is the property worth protecting, and a GitLab-only example
-could not be tested on every commit the way the Forgejo one is. Also out of scope for good:
-members and permissions, shared groups, group settings, group tokens — forgelab is about
-repositories.
+**Not doing.** Length checks on joined names (the forge's own error says it better); a scope map
+in `sandboxes.yaml`; a GitLab-only example fleet or format dialect -- one fleet producing a
+byte-identical lock on every forge is the property worth protecting. Also out of scope for good:
+members and permissions, shared groups, group settings, group tokens, project settings --
+forgelab is about repositories.
 
 ## 4. Smaller, each waiting for its trigger
 
