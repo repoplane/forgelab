@@ -19,6 +19,7 @@ sandboxes:
   partial: {forge: github,      org: acme-sandbox}
   noproj:  {forge: azuredevops, org: acme, token_env: T}
   oldproj: {forge: azuredevops, org: acme, project: sandbox, token_env: T}
+  ghproj:  {forge: github,      org: acme-sandbox, default_project: fleet, token_env: T}
 `
 
 func TestSandboxResolution(t *testing.T) {
@@ -48,7 +49,7 @@ func TestSandboxResolution(t *testing.T) {
 		t.Error("org_allowlist should still be parsed, so that Open can say it is unused")
 	}
 
-	for _, name := range []string{"nourl", "badurl", "partial", "noproj", "nope"} {
+	for _, name := range []string{"nourl", "badurl", "partial", "noproj", "ghproj", "nope"} {
 		if _, err := cfg.Sandbox(name); err == nil {
 			t.Errorf("%s: want an error", name)
 		}

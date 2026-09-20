@@ -147,6 +147,10 @@ func (c *Config) Sandbox(name string) (Sandbox, error) {
 	if sb.Forge == "azuredevops" && sb.DefaultProject == "" {
 		return Sandbox{}, fmt.Errorf("sandbox %q: azuredevops needs a default_project", name)
 	}
+	// Elsewhere there is no such thing, and destroy would list it as a namespace to remove.
+	if sb.Forge != "azuredevops" && sb.DefaultProject != "" {
+		return Sandbox{}, fmt.Errorf("sandbox %q: default_project only exists on azuredevops, not on %s", name, sb.Forge)
+	}
 	if sb.Forge == "" || sb.BaseURL == "" || sb.Org == "" || sb.TokenEnv == "" {
 		return Sandbox{}, fmt.Errorf("sandbox %q: forge, base_url, org and token_env are required", name)
 	}
