@@ -12,8 +12,9 @@ import (
 
 // Destroy deletes the declared repositories that carry the marker topic, and nothing else:
 // not undeclared repositories, not a same-named repository forgelab did not create, and
-// not the organisation. The namespaces they sat in go too, deepest first, but only those
-// left with nothing at all in them.
+// not the organisation. The namespaces they sat in go too, with whatever else is in them by
+// then, but only those forgelab made: the marker means the same on a namespace as on a
+// repository.
 func (e *Env) Destroy(ctx context.Context) error {
 	spec, err := fleet.LoadSpec(e.fsys)
 	if err != nil {
@@ -76,14 +77,18 @@ func (e *Env) Destroy(ctx context.Context) error {
 		}
 		return ns + "/"
 	}
-	// No question without a repository to lose. What is left to remove then is empty
+	// No question without a declared repository to lose. What is left to remove then is
 	// namespaces of forgelab's own making, which is how an interrupted destroy is finished.
 	if len(doomed) > 0 {
 		for _, ns := range namespaces {
-			e.printf("  - %-28s namespace: only if forgelab made it, and it is left empty\n", label(ns))
+			e.printf("  - %-28s namespace, with all it holds: only if forgelab made it\n", label(ns))
 		}
 		e.printf("\n  Deletion cannot be undone: pull requests, issue numbers and history go with them.\n")
-		e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Org)
+		if len(namespaces) > 0 {
+			e.printf("  Only these %d and those namespaces are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Org)
+		} else {
+			e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Org)
+		}
 		if err := e.confirm(); err != nil {
 			return err
 		}
@@ -98,28 +103,20 @@ func (e *Env) Destroy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// One at a time, deepest first: a namespace is empty only once the ones below it are gone,
-	// and what a kept one sits in is not empty either.
+	// Outermost first: one that forgelab made takes everything inside with it, and one it did
+	// not make is kept while forgelab's own inside it still go.
 	removed := 0
-	var kept []string
 	for _, ns := range namespaces {
-		why := ""
-		if slices.ContainsFunc(kept, func(k string) bool { return strings.HasPrefix(k, ns+"/") }) {
-			why = "not empty"
-		} else {
-			gone, reason, err := e.Forge.DeleteNamespace(ctx, ns)
-			if err != nil {
-				return fmt.Errorf("delete namespace %s: %w", ns, err)
-			}
-			if gone {
-				removed++
-				e.printf("  - %-28s namespace removed\n", label(ns))
-			}
-			why = reason
+		gone, kept, err := e.Forge.DeleteNamespace(ctx, ns)
+		if err != nil {
+			return fmt.Errorf("delete namespace %s: %w", ns, err)
 		}
-		if why != "" {
-			kept = append(kept, ns)
-			e.printf("  ! %-28s kept: %s\n", label(ns), why)
+		if gone {
+			removed++
+			e.printf("  - %-28s namespace removed\n", label(ns))
+		}
+		if kept != "" {
+			e.printf("  ! %-28s kept: %s\n", label(ns), kept)
 		}
 	}
 	switch {

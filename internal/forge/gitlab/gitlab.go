@@ -350,11 +350,10 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// DeleteNamespace removes a subgroup forgelab made, once empty, and for good, the way Delete
-// does a project: a first DELETE may only schedule it, a second naming its path removes it
-// now. Both what it holds and its own removal are read a few times over, since GitLab
-// deletes in the background: a project deleted a moment ago is still listed, and a subgroup
-// still there would keep its parent.
+// DeleteNamespace removes a subgroup forgelab made, with all it holds, and for good, the way
+// Delete does a project: a first DELETE may only schedule it, a second naming its new path
+// removes it now. The removal is waited for, since GitLab deletes in the background and a
+// re-seed needs the path.
 func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, error) {
 	if ns == "" {
 		return false, "", nil // the sandbox's own group
@@ -368,30 +367,15 @@ func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, 
 	if !strings.HasPrefix(g.Description, forge.NamespaceMarker) {
 		return false, "not created by forgelab", nil
 	}
-	delete(c.groups.byNS, ns)
+	for known := range c.groups.byNS {
+		if known == ns || strings.HasPrefix(known, ns+"/") {
+			delete(c.groups.byNS, known)
+		}
+	}
 	byID := "/groups/" + strconv.Itoa(g.ID)
-
 	// One that an earlier destroy only managed to schedule goes straight to the second DELETE.
-	for attempt := 1; g.Deleting == nil; attempt++ {
-		var projects, subgroups []struct {
-			ID int `json:"id"`
-		}
-		if _, err := c.do(ctx, http.MethodGet, byID+"/projects?include_subgroups=true&per_page=1", nil, &projects); err != nil {
-			return false, "", err
-		}
-		if _, err := c.do(ctx, http.MethodGet, byID+"/subgroups?per_page=1", nil, &subgroups); err != nil {
-			return false, "", err
-		}
-		if len(projects)+len(subgroups) == 0 {
-			if _, err := c.do(ctx, http.MethodDelete, byID, nil, nil); err != nil {
-				return false, "", err
-			}
-			break
-		}
-		if attempt == 5 {
-			return false, "not empty", nil
-		}
-		if err := c.sleep(ctx, 2*time.Second); err != nil {
+	if g.Deleting == nil {
+		if _, err := c.do(ctx, http.MethodDelete, byID, nil, nil); err != nil {
 			return false, "", err
 		}
 	}

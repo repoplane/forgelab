@@ -108,8 +108,8 @@ func TestLoadSpecWalksNamespaces(t *testing.T) {
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("repos: got %v, want %v", names, want)
 	}
-	if got, want := spec.Namespaces(), []string{"platform/core", "payments", "platform"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("namespaces, deepest first: got %v, want %v", got, want)
+	if got, want := spec.Namespaces(), []string{"payments", "platform", "platform/core"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("namespaces, outermost first: got %v, want %v", got, want)
 	}
 
 	// A file makes it a repository, so the override below it no longer names one.

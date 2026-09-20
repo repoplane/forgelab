@@ -54,7 +54,8 @@ type Caps struct {
 const AnyDepth = -1
 
 // NamespaceMarker is the description of every namespace Create makes. Groups and projects
-// carry no topics, so this is what tells DeleteNamespace that one is forgelab's to remove.
+// carry no topics, so this is their marker, and it says what the topic says of a repository:
+// work in it freely, and expect forgelab to remove it, with all it holds, and seed it again.
 const NamespaceMarker = "forgelab-managed"
 
 // Settings is a partial update: nil fields are left alone.
@@ -92,8 +93,8 @@ type Forge interface {
 	// sets them next, and deletes what it just created if that fails.
 	Create(ctx context.Context, name, visibility, defaultBranch string, topics []string) error
 	Delete(ctx context.Context, name string) error
-	// DeleteNamespace removes a namespace, but only one that carries the NamespaceMarker and
-	// has nothing at all left in it; otherwise kept says why it was left alone. A namespace
+	// DeleteNamespace removes a namespace that carries the NamespaceMarker, with all it holds;
+	// otherwise kept says why it was left alone. A namespace
 	// that does not exist is neither removed nor kept. The namespace "" is where repositories
 	// without one live: removable where forgelab makes it (an Azure DevOps default project),
 	// and otherwise the sandbox itself, which is never touched.

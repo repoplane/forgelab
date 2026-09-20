@@ -240,41 +240,32 @@ func TestGetInMissingProject(t *testing.T) {
 	}
 }
 
+// The marker alone decides: what a marked project holds goes with it, as a marked
+// repository's branches and requests do.
 func TestDeleteNamespace(t *testing.T) {
-	const ours = `{"id":"p9","description":"forgelab-managed"}`
 	for name, tc := range map[string]struct {
-		project, repos string
-		removed        bool
-		kept           string
+		project string
+		removed bool
+		kept    string
 	}{
-		"born-with repository only": {project: ours, repos: `{"value":[{"id":"1","name":"Platform"}]}`, removed: true},
-		"something else":            {project: ours, repos: `{"value":[{"id":"1","name":"platform"},{"id":"2","name":"scratch"}]}`, kept: "not empty"},
-		// a consumer that touches every repository it finds must not leave the project stuck
-		"born-with, but pushed to": {project: ours, repos: `{"value":[{"id":"1","name":"pushed"}]}`, removed: true},
-		// boards, pipelines, a wiki: nothing forgelab can see, so nothing it may judge empty
-		"somebody else's": {project: `{"id":"p9","description":"Platform team"}`, repos: `{"value":[]}`, kept: "not created by forgelab"},
+		"ours":            {project: `{"id":"p9","description":"forgelab-managed"}`, removed: true},
+		"somebody else's": {project: `{"id":"p9","description":"Platform team"}`, kept: "not created by forgelab"},
 	} {
-		project := "platform"
-		if strings.Contains(tc.repos, "pushed") {
-			project = "pushed"
-		}
 		deleted := false
 		c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case r.Method == http.MethodDelete && r.URL.Path == "/acme/_apis/projects/p9":
 				deleted = true
 				fmt.Fprint(w, `{"id":"op1"}`)
-			case r.URL.Path == "/acme/_apis/projects/"+project:
+			case r.URL.Path == "/acme/_apis/projects/platform":
 				fmt.Fprint(w, tc.project)
-			case r.URL.Path == "/acme/"+project+"/_apis/git/repositories":
-				fmt.Fprint(w, tc.repos)
 			case r.URL.Path == "/acme/_apis/operations/op1":
 				fmt.Fprint(w, `{"id":"op1","status":"succeeded"}`)
-			default:
+			default: // in particular, not the repositories: what it holds is nobody's business
 				t.Errorf("%s: unexpected %s %s", name, r.Method, r.URL.Path)
 			}
 		})
-		removed, kept, err := c.DeleteNamespace(ctx, project)
+		removed, kept, err := c.DeleteNamespace(ctx, "platform")
 		if err != nil || removed != tc.removed || kept != tc.kept || deleted != tc.removed {
 			t.Errorf("%s: removed=%t kept=%q deleted=%t err=%v", name, removed, kept, deleted, err)
 		}

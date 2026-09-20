@@ -263,33 +263,29 @@ func TestCreateMakesSubgroups(t *testing.T) {
 	}
 }
 
+// The marker alone decides: what a marked subgroup holds goes with it, as a marked
+// repository's branches and requests do.
 func TestDeleteNamespace(t *testing.T) {
 	const core = "/api/v4/groups/acme-sandbox%2Fservices%2Fcore"
-	const ours = `"description":"forgelab-managed"`
 	for name, tc := range map[string]struct {
-		group, projects string
-		removed         bool
-		kept            string
-		deletes         int
+		group   string
+		removed bool
+		kept    string
+		deletes int
 	}{
-		"empty":            {group: `{"id":9,` + ours + `}`, projects: `[]`, removed: true, deletes: 2},
-		"not empty":        {group: `{"id":9,` + ours + `}`, projects: `[{"id":1}]`, kept: "not empty"},
-		"somebody else's":  {group: `{"id":9,"description":"Platform team"}`, projects: `[]`, kept: "not created by forgelab"},
-		"scheduled before": {group: `{"id":9,` + ours + `,"marked_for_deletion_on":"2026-09-26"}`, removed: true, deletes: 1},
+		"ours":             {group: `{"id":9,"description":"forgelab-managed"}`, removed: true, deletes: 2},
+		"somebody else's":  {group: `{"id":9,"description":"Platform team"}`, kept: "not created by forgelab"},
+		"scheduled before": {group: `{"id":9,"description":"forgelab-managed","marked_for_deletion_on":"2026-09-26"}`, removed: true, deletes: 1},
 	} {
 		deletes := 0
-		c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case r.Method == http.MethodDelete:
 				deletes++
 			case r.URL.EscapedPath() == core:
 				fmt.Fprint(w, tc.group)
-			case r.URL.Path == "/api/v4/groups/9/projects":
-				fmt.Fprint(w, tc.projects)
-			case r.URL.Path == "/api/v4/groups/9/subgroups":
-				fmt.Fprint(w, `[]`)
-			case deletes < tc.deletes: // scheduled only: the second DELETE makes it real
-				fmt.Fprint(w, `{"full_path":"acme-sandbox/services/core","marked_for_deletion_on":"2026-09-26"}`)
+			case deletes < tc.deletes: // scheduled only, and renamed: the second DELETE names that path
+				fmt.Fprint(w, `{"full_path":"acme-sandbox/services/core-deletion_scheduled-9","marked_for_deletion_on":"2026-09-26"}`)
 			default:
 				http.NotFound(w, r)
 			}
@@ -298,11 +294,19 @@ func TestDeleteNamespace(t *testing.T) {
 		if err != nil || removed != tc.removed || kept != tc.kept || deletes != tc.deletes {
 			t.Errorf("%s: removed=%t kept=%q deletes=%d err=%v", name, removed, kept, deletes, err)
 		}
+		if strings.Contains(strings.Join(*seen, "\n"), "/projects") {
+			t.Errorf("%s: what the subgroup holds is nobody's business: %v", name, *seen)
+		}
 	}
 
 	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
-	if removed, kept, err := c.DeleteNamespace(ctx, "gone"); removed || kept != "" || err != nil || len(*seen) != 1 {
-		t.Errorf("a missing namespace is neither: removed=%t kept=%q err=%v %v", removed, kept, err, *seen)
+	for _, ns := range []string{"gone", ""} {
+		if removed, kept, err := c.DeleteNamespace(ctx, ns); removed || kept != "" || err != nil {
+			t.Errorf("%q is neither removed nor kept: removed=%t kept=%q err=%v", ns, removed, kept, err)
+		}
+	}
+	if len(*seen) != 1 {
+		t.Errorf("the sandbox's own group is not even looked at: %v", *seen)
 	}
 }
 

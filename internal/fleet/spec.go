@@ -36,8 +36,8 @@ type Spec struct {
 	Repos   []Repo
 }
 
-// Namespaces lists every namespace the repositories sit in, ancestors included, deepest
-// first: the order in which they can be removed.
+// Namespaces lists every namespace the repositories sit in, ancestors included, each one
+// before what is inside it.
 func (s *Spec) Namespaces() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -47,12 +47,7 @@ func (s *Spec) Namespaces() []string {
 			out = append(out, ns)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if di, dj := strings.Count(out[i], "/"), strings.Count(out[j], "/"); di != dj {
-			return di > dj
-		}
-		return out[i] < out[j]
-	})
+	sort.Strings(out)
 	return out
 }
 

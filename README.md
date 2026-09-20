@@ -161,12 +161,12 @@ where it can, and what it cannot hold is joined with `-`:
 | `platform/core/api` | `<group>/platform/core/api` | `platform/_git/core-api` | `platform-core-api` |
 
 `apply` creates the subgroups and projects it needs, with `forgelab-managed` as their
-description: they have no topics, so that is their marker. `destroy` removes them again, deepest
-first, but only those that carry the marker **and** are left with nothing at all inside — a
-subgroup or project somebody else made is never removed, and anything undeclared keeps a namespace
-alive — and never the sandbox's own group or org. (An Azure DevOps `default_project` is a
-project like the others: made by `apply`, removed by `destroy` under the same two conditions.) On a sandbox with no declared
-repository left, `destroy` asks nothing: all it can remove then is its own empty namespaces. Two paths that join to the same name
+description: they have no topics, so that is their marker. It means what the topic means on a
+repository — work in it freely, and expect ForgeLab to remove it and seed it again. `destroy`
+removes a marked namespace **with all it holds by then**, a repository a test created there
+included; one somebody else made is used but never removed, and neither is the sandbox's own
+group or org. (An Azure DevOps `default_project` is a project like the others.) On a sandbox with
+no declared repository left, `destroy` asks nothing. Two paths that join to the same name
 (`a-b/c` and `a/b-c`) are refused on every forge, so a fleet never works on one forge only.
 
 `sandboxes.yaml` says where it goes. The org is only reachable through here — there is no
@@ -251,9 +251,8 @@ manage* and *Project and Team: Read, write & manage*: ForgeLab creates and delet
 - `archived: true` becomes **disabled**, which is stricter than archived: the repository is still
   listed, but every read of it answers 404. A good edge case for whatever consumes the listing.
 - Pull request ids are unique across the project, not per repository.
-- A new project is born with an empty repository of its own name. ForgeLab leaves it alone, and it
-  never keeps `destroy` from removing the project — not even once something has been pushed to it,
-  as a consumer that works through every repository it finds will do.
+- A new project is born with an empty repository of its own name. ForgeLab leaves it alone; it
+  goes with the project.
 
 [`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories at the root, each a
 shape that forge integrations trip on, and three more in namespaces.

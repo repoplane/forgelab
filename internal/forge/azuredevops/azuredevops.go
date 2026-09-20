@@ -418,10 +418,8 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// DeleteNamespace removes a project forgelab made, once it holds nothing but the repository
-// it was born with. Only the first segment of a namespace is a project (see
-// Caps), and "" is the default one. The listing is read a few times over: it lags on a
-// repository deleted a moment ago.
+// DeleteNamespace removes a project forgelab made, with all it holds. Only the first segment
+// of a namespace is a project (see Caps), and "" is the default one.
 func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, error) {
 	if strings.Contains(ns, "/") {
 		return false, "", nil
@@ -441,29 +439,11 @@ func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, 
 		}
 		return false, "", err
 	}
-	// Repositories are all forgelab can see of a project: not its boards, pipelines or wiki.
-	// So it only ever removes one it made itself.
 	if !strings.HasPrefix(p.Description, forge.NamespaceMarker) {
 		return false, "not created by forgelab", nil
 	}
 	delete(c.projects.ids, ns)
 	delete(c.projects.born, ns)
-
-	for attempt := 1; ; attempt++ {
-		empty, err := c.projectIsEmpty(ctx, ns)
-		if err != nil {
-			return false, "", err
-		}
-		if empty {
-			break
-		}
-		if attempt == 5 {
-			return false, "not empty", nil
-		}
-		if err := c.sleep(ctx, time.Second); err != nil {
-			return false, "", err
-		}
-	}
 
 	var op operation
 	if _, err := c.do(ctx, http.MethodDelete, "/_apis/projects/"+p.ID, "", nil, &op); err != nil {
@@ -473,24 +453,6 @@ func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, 
 		return false, "", err
 	}
 	return true, "", nil
-}
-
-func (c *Client) projectIsEmpty(ctx context.Context, project string) (bool, error) {
-	var all struct {
-		Value []repository `json:"value"`
-	}
-	if _, err := c.do(ctx, http.MethodGet, git(project, "/repositories"), "", nil, &all); err != nil {
-		return false, err
-	}
-	// The repository a project is born with came with a project forgelab made, so it is
-	// forgelab's whatever it holds by now: a consumer that works through every repository it
-	// finds would otherwise leave a project that can never be removed.
-	for _, r := range all.Value {
-		if !strings.EqualFold(r.Name, project) {
-			return false, nil
-		}
-	}
-	return true, nil
 }
 
 func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settings) error {
