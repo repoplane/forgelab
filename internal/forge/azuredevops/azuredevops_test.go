@@ -211,7 +211,7 @@ func TestCreateMakesProject(t *testing.T) {
 		t.Fatalf("bodies=%v polls=%d\n%s", bodies, polls, strings.Join(*seen, "\n"))
 	}
 	caps := bodies[0]["capabilities"].(map[string]any)
-	if bodies[0]["name"] != "platform" || caps["processTemplate"].(map[string]any)["templateTypeId"] != "agile" ||
+	if bodies[0]["name"] != "platform" || bodies[0]["description"] != forge.NamespaceDescription || caps["processTemplate"].(map[string]any)["templateTypeId"] != "agile" ||
 		caps["versioncontrol"].(map[string]any)["sourceControlType"] != "Git" {
 		t.Errorf("project: %+v", bodies[0])
 	}
@@ -241,14 +241,17 @@ func TestGetInMissingProject(t *testing.T) {
 }
 
 func TestDeleteNamespace(t *testing.T) {
+	const ours = `{"id":"p9","description":"forgelab-managed: created by ..."}`
 	for name, tc := range map[string]struct {
-		repos   string
-		kept    bool
-		deleted bool
+		project, repos string
+		removed        bool
+		kept           string
 	}{
-		"born-with repository only": {repos: `{"value":[{"id":"1","name":"Platform"}]}`, deleted: true},
-		"something else":            {repos: `{"value":[{"id":"1","name":"platform"},{"id":"2","name":"scratch"}]}`, kept: true},
-		"born-with, but pushed to":  {repos: `{"value":[{"id":"1","name":"pushed"}]}`, kept: true},
+		"born-with repository only": {project: ours, repos: `{"value":[{"id":"1","name":"Platform"}]}`, removed: true},
+		"something else":            {project: ours, repos: `{"value":[{"id":"1","name":"platform"},{"id":"2","name":"scratch"}]}`, kept: "not empty"},
+		"born-with, but pushed to":  {project: ours, repos: `{"value":[{"id":"1","name":"pushed"}]}`, kept: "not empty"},
+		// boards, pipelines, a wiki: nothing forgelab can see, so nothing it may judge empty
+		"somebody else's": {project: `{"id":"p9","description":"Platform team"}`, repos: `{"value":[]}`, kept: "not created by forgelab"},
 	} {
 		project := "platform"
 		if strings.Contains(tc.repos, "pushed") {
@@ -261,7 +264,7 @@ func TestDeleteNamespace(t *testing.T) {
 				deleted = true
 				fmt.Fprint(w, `{"id":"op1"}`)
 			case r.URL.Path == "/acme/_apis/projects/"+project:
-				fmt.Fprint(w, `{"id":"p9"}`)
+				fmt.Fprint(w, tc.project)
 			case r.URL.Path == "/acme/"+project+"/_apis/git/repositories":
 				fmt.Fprint(w, tc.repos)
 			case strings.HasSuffix(r.URL.Path, "/pushed/refs"):
@@ -274,20 +277,34 @@ func TestDeleteNamespace(t *testing.T) {
 				t.Errorf("%s: unexpected %s %s", name, r.Method, r.URL.Path)
 			}
 		})
-		kept, err := c.DeleteNamespace(ctx, project)
-		if err != nil || kept != tc.kept || deleted != tc.deleted {
-			t.Errorf("%s: kept=%t deleted=%t err=%v", name, kept, deleted, err)
+		removed, kept, err := c.DeleteNamespace(ctx, project)
+		if err != nil || removed != tc.removed || kept != tc.kept || deleted != tc.removed {
+			t.Errorf("%s: removed=%t kept=%q deleted=%t err=%v", name, removed, kept, deleted, err)
 		}
 	}
 
 	// Deeper than a project there is nothing to remove, and the sandbox's own project stays.
 	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	for _, ns := range []string{"platform/core", "sandbox", "gone"} {
-		if kept, err := c.DeleteNamespace(ctx, ns); kept || err != nil {
-			t.Errorf("%s: kept=%t err=%v", ns, kept, err)
+		if removed, kept, err := c.DeleteNamespace(ctx, ns); removed || kept != "" || err != nil {
+			t.Errorf("%s: removed=%t kept=%q err=%v", ns, removed, kept, err)
 		}
 	}
 	if len(*seen) != 1 {
 		t.Errorf("only the missing project is looked up: %v", *seen)
+	}
+}
+
+// Only a project made a moment ago is known to hold nothing but its born-with repository.
+func TestCreateConflictInExistingProject(t *testing.T) {
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			http.Error(w, "exists", http.StatusConflict)
+			return
+		}
+		fmt.Fprint(w, `{"id":"p9"}`)
+	})
+	if err := c.Create(ctx, "platform/platform", "", "", nil); err == nil {
+		t.Error("a conflict in a project that was already there must surface")
 	}
 }

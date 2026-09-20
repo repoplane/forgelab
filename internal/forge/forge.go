@@ -44,10 +44,21 @@ type Caps struct {
 	// ArchivedUnreadable: an archived repository cannot be read at all -- not its refs, not
 	// its requests. forgelab can then only check the flag itself.
 	ArchivedUnreadable bool
-	// Namespaces: a namespace becomes something of its own -- a subgroup, a project -- that
-	// Create makes and DeleteNamespace removes, rather than a prefix of the name.
-	Namespaces bool
+	// NamespaceDepth: how many leading segments of a namespace become something of their own
+	// -- a subgroup, a project -- that Create makes and DeleteNamespace removes. Zero means a
+	// namespace is only a prefix of the name; AnyDepth means all of them.
+	NamespaceDepth int
 }
+
+// AnyDepth is a NamespaceDepth without a limit.
+const AnyDepth = -1
+
+// NamespaceMarker opens the description of every namespace Create makes. Groups and projects
+// carry no topics, so this is what tells DeleteNamespace that one is forgelab's to remove.
+const NamespaceMarker = "forgelab-managed"
+
+// NamespaceDescription is that description in full.
+const NamespaceDescription = NamespaceMarker + ": created by `forgelab apply`, removed by `forgelab destroy` once empty."
 
 // Settings is a partial update: nil fields are left alone.
 type Settings struct {
@@ -84,10 +95,10 @@ type Forge interface {
 	// sets them next, and deletes what it just created if that fails.
 	Create(ctx context.Context, name, visibility, defaultBranch string, topics []string) error
 	Delete(ctx context.Context, name string) error
-	// DeleteNamespace removes a namespace that Create made, and only when nothing at all is
-	// left in it; kept=true says it was left alone for that reason. A missing namespace, or a
-	// forge that has none, is not an error.
-	DeleteNamespace(ctx context.Context, ns string) (kept bool, err error)
+	// DeleteNamespace removes a namespace, but only one that carries the NamespaceMarker and
+	// has nothing at all left in it; otherwise kept says why it was left alone. A namespace
+	// that does not exist is neither removed nor kept.
+	DeleteNamespace(ctx context.Context, ns string) (removed bool, kept string, err error)
 
 	UpdateSettings(ctx context.Context, name string, s Settings) error
 	SetTopics(ctx context.Context, name string, topics []string) error

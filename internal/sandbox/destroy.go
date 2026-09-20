@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/repoplane/forgelab/internal/fleet"
+	"github.com/repoplane/forgelab/internal/forge"
 )
 
 // Destroy deletes the declared repositories that carry the marker topic, and nothing else:
@@ -55,27 +57,26 @@ func (e *Env) Destroy(ctx context.Context) error {
 			e.printf("  ! %-28s left alone: %s\n", t.name, t.skip)
 		}
 	}
-	// Asked for even when no repository is left, so that an interrupted destroy is finished
-	// by running it again.
+	// The namespaces this forge holds as such, rather than as a prefix of the name.
 	var namespaces []string
-	if e.Forge.Caps().Namespaces {
-		namespaces = spec.Namespaces()
+	if depth := e.Forge.Caps().NamespaceDepth; depth != 0 {
+		for _, ns := range spec.Namespaces() {
+			if depth == forge.AnyDepth || strings.Count(ns, "/") < depth {
+				namespaces = append(namespaces, ns)
+			}
+		}
 	}
-	if len(doomed) == 0 && len(namespaces) == 0 {
-		e.printf("  nothing to delete\n\n")
-		return nil
-	}
-	for _, ns := range namespaces {
-		e.printf("  - %-28s namespace, removed only if left empty\n", ns+"/")
-	}
-	if len(doomed) == 0 {
-		e.printf("\n  No declared repository is left. Anything else in %s is left alone.\n", e.Sandbox.Scope())
-	} else {
+	// No question without a repository to lose. What is left to remove then is empty
+	// namespaces of forgelab's own making, which is how an interrupted destroy is finished.
+	if len(doomed) > 0 {
+		for _, ns := range namespaces {
+			e.printf("  - %-28s namespace: only if forgelab made it, and it is left empty\n", ns+"/")
+		}
 		e.printf("\n  Deletion cannot be undone: pull requests, issue numbers and history go with them.\n")
 		e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Scope())
-	}
-	if err := e.confirm(); err != nil {
-		return err
+		if err := e.confirm(); err != nil {
+			return err
+		}
 	}
 
 	err = forEach(ctx, doomed, func(ctx context.Context, t *target) error {
@@ -87,16 +88,39 @@ func (e *Env) Destroy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// One at a time: a namespace is empty only once the ones below it are gone.
+	// One at a time, deepest first: a namespace is empty only once the ones below it are gone,
+	// and what a kept one sits in is not empty either.
+	removed := 0
+	var kept []string
 	for _, ns := range namespaces {
-		kept, err := e.Forge.DeleteNamespace(ctx, ns)
-		if err != nil {
-			return fmt.Errorf("delete namespace %s: %w", ns, err)
+		why := ""
+		if slices.ContainsFunc(kept, func(k string) bool { return strings.HasPrefix(k, ns+"/") }) {
+			why = "not empty"
+		} else {
+			gone, reason, err := e.Forge.DeleteNamespace(ctx, ns)
+			if err != nil {
+				return fmt.Errorf("delete namespace %s: %w", ns, err)
+			}
+			if gone {
+				removed++
+				e.printf("  - %-28s namespace removed\n", ns+"/")
+			}
+			why = reason
 		}
-		if kept {
-			e.printf("  ! %-28s kept: not empty\n", ns+"/")
+		if why != "" {
+			kept = append(kept, ns)
+			e.printf("  ! %-28s kept: %s\n", ns+"/", why)
 		}
 	}
-	e.printf("ok: %d repositories deleted\n", len(doomed))
+	switch {
+	case len(doomed) == 0 && removed == 0:
+		e.printf("  nothing to delete\n\n")
+	case removed == 0:
+		e.printf("ok: %d repositories deleted\n", len(doomed))
+	case removed == 1:
+		e.printf("ok: %d repositories deleted, 1 namespace removed\n", len(doomed))
+	default:
+		e.printf("ok: %d repositories deleted, %d namespaces removed\n", len(doomed), removed)
+	}
 	return nil
 }

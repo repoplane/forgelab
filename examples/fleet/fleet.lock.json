@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fleet_digest": "sha256:2bc4db7dc64e781a04105fbc470a0b72555c7041166202095d9aad0b179f4d73",
+  "fleet_digest": "sha256:f98892ed1bcbc67ce764531a0dd6a6c24e4a03e45e03f0916fc159d7298e5ce6",
   "repos": [
     {
       "name": "archived",

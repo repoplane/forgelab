@@ -160,9 +160,12 @@ where it can, and what it cannot hold is joined with `-`:
 | `services/api` | `<group>/services/api` | `services/_git/api` | `services-api` |
 | `platform/core/api` | `<group>/platform/core/api` | `platform/_git/core-api` | `platform-core-api` |
 
-`apply` creates the subgroups and projects it needs. `destroy` removes them again, deepest first,
-but only those left with **nothing at all** inside — anything it did not declare keeps a namespace
-alive — and never the sandbox's own group, org or project. Two paths that join to the same name
+`apply` creates the subgroups and projects it needs, and writes `forgelab-managed` into their
+description: they have no topics, so that is their marker. `destroy` removes them again, deepest
+first, but only those that carry the marker **and** are left with nothing at all inside — a
+subgroup or project somebody else made is never removed, and anything undeclared keeps a namespace
+alive — and never the sandbox's own group, org or project. On a sandbox with no declared
+repository left, `destroy` asks nothing: all it can remove then is its own empty namespaces. Two paths that join to the same name
 (`a-b/c` and `a/b-c`) are refused on every forge, so a fleet never works on one forge only.
 
 `sandboxes.yaml` says where it goes. The org is only reachable through here — there is no

@@ -200,7 +200,9 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 }
 
 // DeleteNamespace has nothing to remove: a namespace is only a prefix of the name here.
-func (c *Client) DeleteNamespace(context.Context, string) (bool, error) { return false, nil }
+func (c *Client) DeleteNamespace(context.Context, string) (bool, string, error) {
+	return false, "", nil
+}
 
 func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settings) error {
 	fields := map[string]any{}

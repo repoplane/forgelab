@@ -57,8 +57,9 @@ namespace, and a repository is its path (`platform/core/api`) everywhere -- over
 reports, the `Forge` interface. No new key in `fleet.yaml`, nothing new in `sandboxes.yaml`. Each
 forge lands the path where it can: subgroups on GitLab (any depth), the first segment a project
 on Azure DevOps and the rest `-`-joined, all of it `-`-joined on GitHub and Forgejo. `apply`
-creates the namespaces inside `Create`; `destroy` removes those left with nothing at all in them
-(`DeleteNamespace`), never the sandbox root. The same leaf name in two namespaces -- the classic
+creates the namespaces inside `Create`, marked `forgelab-managed` in their description; `destroy`
+removes those that carry the marker and are left with nothing at all in them (`DeleteNamespace`),
+never the sandbox root. The same leaf name in two namespaces -- the classic
 "keyed by name" bug -- is in the example fleet.
 
 **Verified live on Azure DevOps (2026-09-20):** two projects created inside a 15-second `apply`
@@ -81,6 +82,12 @@ which is separate from the repository ones (or every git operation answers 403).
 `platform-core-api`, `platform-tooling` and `services-api`, reports keep the fleet path
 (`platform/core/api: extra branch stray`), drift on one is reset, and `destroy` asks nothing about
 namespaces there.
+
+**After review, verified live on both (2026-09-20):** a hand-made `platform` subgroup or project
+is used by `apply` and kept by `destroy` ("not created by forgelab") while forgelab's own
+namespaces inside and beside it go; a clean sandbox answers "nothing to delete" without a
+prompt. GitLab renames a group scheduled for deletion (`platform-deletion_scheduled-<id>`), as it
+does a project, so the second DELETE must name the path read back, not the original one.
 
 Facts already in hand for Azure DevOps (live, 2026-09-19): a repository carries no topics,
 description or properties, so nothing can hold a marker; deletion is soft with a purgeable

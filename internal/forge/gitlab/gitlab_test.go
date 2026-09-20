@@ -249,8 +249,8 @@ func TestCreateMakesSubgroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []map[string]any{
-		{"name": "platform", "path": "platform", "parent_id": float64(7), "visibility": "public"},
-		{"name": "core", "path": "core", "parent_id": float64(8), "visibility": "public"},
+		{"name": "platform", "path": "platform", "parent_id": float64(7), "visibility": "public", "description": forge.NamespaceDescription},
+		{"name": "core", "path": "core", "parent_id": float64(8), "visibility": "public", "description": forge.NamespaceDescription},
 	}
 	if len(posts) != 4 || fmt.Sprint(posts[:2]) != fmt.Sprint(want) {
 		t.Errorf("subgroups: %v", posts)
@@ -265,13 +265,17 @@ func TestCreateMakesSubgroups(t *testing.T) {
 
 func TestDeleteNamespace(t *testing.T) {
 	const core = "/api/v4/groups/acme-sandbox%2Fservices%2Fcore"
+	const ours = `"description":"forgelab-managed: created by ..."`
 	for name, tc := range map[string]struct {
-		projects string
-		kept     bool
-		deletes  int
+		group, projects string
+		removed         bool
+		kept            string
+		deletes         int
 	}{
-		"empty":     {projects: `[]`, deletes: 2},
-		"not empty": {projects: `[{"id":1}]`, kept: true},
+		"empty":            {group: `{"id":9,` + ours + `}`, projects: `[]`, removed: true, deletes: 2},
+		"not empty":        {group: `{"id":9,` + ours + `}`, projects: `[{"id":1}]`, kept: "not empty"},
+		"somebody else's":  {group: `{"id":9,"description":"Platform team"}`, projects: `[]`, kept: "not created by forgelab"},
+		"scheduled before": {group: `{"id":9,` + ours + `,"marked_for_deletion_on":"2026-09-26"}`, removed: true, deletes: 1},
 	} {
 		deletes := 0
 		c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
@@ -279,25 +283,36 @@ func TestDeleteNamespace(t *testing.T) {
 			case r.Method == http.MethodDelete:
 				deletes++
 			case r.URL.EscapedPath() == core:
-				fmt.Fprint(w, `{"id":9}`)
+				fmt.Fprint(w, tc.group)
 			case r.URL.Path == "/api/v4/groups/9/projects":
 				fmt.Fprint(w, tc.projects)
 			case r.URL.Path == "/api/v4/groups/9/subgroups":
 				fmt.Fprint(w, `[]`)
-			case deletes == 1: // scheduled only: the second DELETE makes it real
+			case deletes < tc.deletes: // scheduled only: the second DELETE makes it real
 				fmt.Fprint(w, `{"full_path":"acme-sandbox/services/core","marked_for_deletion_on":"2026-09-26"}`)
 			default:
 				http.NotFound(w, r)
 			}
 		})
-		kept, err := c.DeleteNamespace(ctx, "core")
-		if err != nil || kept != tc.kept || deletes != tc.deletes {
-			t.Errorf("%s: kept=%t deletes=%d err=%v", name, kept, deletes, err)
+		removed, kept, err := c.DeleteNamespace(ctx, "core")
+		if err != nil || removed != tc.removed || kept != tc.kept || deletes != tc.deletes {
+			t.Errorf("%s: removed=%t kept=%q deletes=%d err=%v", name, removed, kept, deletes, err)
 		}
 	}
 
 	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
-	if kept, err := c.DeleteNamespace(ctx, "gone"); kept || err != nil || len(*seen) != 1 {
-		t.Errorf("a missing namespace is not an error: kept=%t err=%v %v", kept, err, *seen)
+	if removed, kept, err := c.DeleteNamespace(ctx, "gone"); removed || kept != "" || err != nil || len(*seen) != 1 {
+		t.Errorf("a missing namespace is neither: removed=%t kept=%q err=%v %v", removed, kept, err, *seen)
+	}
+}
+
+// A subgroup that GitLab has only scheduled for deletion still answers, and keeps its path.
+func TestCreateRefusesSubgroupPendingDeletion(t *testing.T) {
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":9,"full_path":"acme-sandbox/services/core","marked_for_deletion_on":"2026-09-26"}`)
+	})
+	err := c.Create(ctx, "core/api", "private", "main", nil)
+	if err == nil || !strings.Contains(err.Error(), "pending deletion") || len(*seen) != 1 {
+		t.Errorf("err=%v seen=%v", err, *seen)
 	}
 }

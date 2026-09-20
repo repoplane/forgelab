@@ -45,7 +45,8 @@ type Client struct {
 	// creates in a new project make it once.
 	projects struct {
 		sync.Mutex
-		ids map[string]string
+		ids  map[string]string
+		born map[string]bool // made by this client, so still holding only what they came with
 	}
 
 	sleep func(context.Context, time.Duration) error // swapped out in tests
@@ -84,7 +85,7 @@ func New(baseURL, org, project, token string, hc *http.Client) (*Client, error) 
 
 // Caps: no topics (so no marker), visibility belongs to the project, and a disabled
 // repository answers 404 to everything but the project's listing.
-func (c *Client) Caps() forge.Caps { return forge.Caps{ArchivedUnreadable: true, Namespaces: true} }
+func (c *Client) Caps() forge.Caps { return forge.Caps{ArchivedUnreadable: true, NamespaceDepth: 1} }
 
 type statusError struct {
 	code int
@@ -211,6 +212,10 @@ func (c *Client) projectIdent(ctx context.Context, project string, create bool) 
 		if err := get(); err != nil {
 			return "", false, err
 		}
+		if c.projects.born == nil {
+			c.projects.born = map[string]bool{}
+		}
+		c.projects.born[project] = true
 	}
 	if c.projects.ids == nil {
 		c.projects.ids = map[string]string{}
@@ -242,8 +247,9 @@ func (c *Client) createProject(ctx context.Context, project string) error {
 	}
 	var op operation
 	_, err := c.do(ctx, http.MethodPost, "/_apis/projects", "", map[string]any{
-		"name":       project,
-		"visibility": "private",
+		"name":        project,
+		"description": forge.NamespaceDescription,
+		"visibility":  "private",
 		"capabilities": map[string]any{
 			"versioncontrol":  map[string]any{"sourceControlType": "Git"},
 			"processTemplate": map[string]any{"templateTypeId": process},
@@ -375,6 +381,7 @@ func (c *Client) Create(ctx context.Context, name, _, _ string, _ []string) erro
 	}
 	c.projects.Lock()
 	pid, _, err := c.projectIdent(ctx, project, true)
+	born := c.projects.born[project]
 	c.projects.Unlock()
 	if err != nil {
 		return err
@@ -383,9 +390,9 @@ func (c *Client) Create(ctx context.Context, name, _, _ string, _ []string) erro
 		"name":    name,
 		"project": map[string]any{"id": pid},
 	}, nil)
-	// A new project comes with an empty repository of its own name. A fixture by that name
-	// takes it over, which is no different from any other declared name here: see Caps.
-	if hasStatus(err, http.StatusConflict) && strings.EqualFold(name, project) {
+	// A project made a moment ago came with an empty repository of its own name, and a
+	// fixture by that name takes it over. In any other project a conflict is a conflict.
+	if hasStatus(err, http.StatusConflict) && born && strings.EqualFold(name, project) {
 		return nil
 	}
 	return err
@@ -411,43 +418,58 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// DeleteNamespace removes the project a namespace starts with, once it holds nothing but the
-// empty repository it was born with. Anything deeper is a name prefix, and the sandbox's own
-// project is never removed. The listing is read a few times over: it lags on a repository
-// deleted a moment ago.
-func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, error) {
+// DeleteNamespace removes a project forgelab made, once it holds nothing but the empty
+// repository it was born with. Only the first segment of a namespace is a project (see
+// Caps), and the sandbox's own is never removed. The listing is read a few times over: it
+// lags on a repository deleted a moment ago.
+func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, error) {
 	if strings.Contains(ns, "/") || strings.EqualFold(ns, c.project) {
-		return false, nil
+		return false, "", nil
 	}
 	c.projects.Lock()
 	defer c.projects.Unlock()
-	id, found, err := c.projectIdent(ctx, ns, false)
-	if err != nil || !found {
-		return false, err
+	var p struct {
+		ID          string `json:"id"`
+		Description string `json:"description"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/_apis/projects/"+url.PathEscape(ns), "", nil, &p); err != nil {
+		if hasStatus(err, http.StatusNotFound) {
+			return false, "", nil
+		}
+		return false, "", err
+	}
+	// Repositories are all forgelab can see of a project: not its boards, pipelines or wiki.
+	// So it only ever removes one it made itself.
+	if !strings.HasPrefix(p.Description, forge.NamespaceMarker) {
+		return false, "not created by forgelab", nil
 	}
 	delete(c.projects.ids, ns)
+	delete(c.projects.born, ns)
 
 	for attempt := 1; ; attempt++ {
 		empty, err := c.projectIsEmpty(ctx, ns)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if empty {
 			break
 		}
 		if attempt == 5 {
-			return true, nil
+			return false, "not empty", nil
 		}
 		if err := c.sleep(ctx, time.Second); err != nil {
-			return false, err
+			return false, "", err
 		}
 	}
 
 	var op operation
-	if _, err := c.do(ctx, http.MethodDelete, "/_apis/projects/"+id, "", nil, &op); err != nil {
-		return false, err
+	if _, err := c.do(ctx, http.MethodDelete, "/_apis/projects/"+p.ID, "", nil, &op); err != nil {
+		return false, "", err
 	}
-	return false, c.wait(ctx, op)
+	if err := c.wait(ctx, op); err != nil {
+		return false, "", err
+	}
+	return true, "", nil
 }
 
 func (c *Client) projectIsEmpty(ctx context.Context, project string) (bool, error) {
