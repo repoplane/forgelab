@@ -33,14 +33,14 @@ func TestSandboxResolution(t *testing.T) {
 	}
 
 	// Hosted forges know where they live; the marker topic has a default.
-	for name, want := range map[string]struct{ baseURL, scope string }{
+	for name, want := range map[string]struct{ baseURL, org string }{
 		"gh":    {"https://github.com", "acme-sandbox"},
 		"gl":    {"https://gitlab.com", "acme-sandbox/services"},
-		"ado":   {"https://dev.azure.com", "acme/sandbox"},
+		"ado":   {"https://dev.azure.com", "acme"},
 		"local": {"http://127.0.0.1:3000", "anything"},
 	} {
 		sb, err := cfg.Sandbox(name)
-		if err != nil || sb.BaseURL != want.baseURL || sb.Scope() != want.scope || sb.MarkerTopic != DefaultMarkerTopic {
+		if err != nil || sb.BaseURL != want.baseURL || sb.Org != want.org || sb.MarkerTopic != DefaultMarkerTopic {
 			t.Errorf("%s: %+v err=%v", name, sb, err)
 		}
 	}

@@ -176,7 +176,7 @@ func (e *Env) confirm() error {
 
 func (e *Env) header(verb string, n int) {
 	e.printf("\n  %s   sandbox %s · %s · %s/%s · %d repositories\n\n",
-		verb, e.Sandbox.Name, e.Sandbox.Forge, strings.TrimRight(e.Sandbox.BaseURL, "/"), e.Sandbox.Scope(), n)
+		verb, e.Sandbox.Name, e.Sandbox.Forge, strings.TrimRight(e.Sandbox.BaseURL, "/"), e.Sandbox.Org, n)
 }
 
 // forEach runs fn over items with bounded concurrency and returns the first error by index.

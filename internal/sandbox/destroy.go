@@ -83,7 +83,7 @@ func (e *Env) Destroy(ctx context.Context) error {
 			e.printf("  - %-28s namespace: only if forgelab made it, and it is left empty\n", label(ns))
 		}
 		e.printf("\n  Deletion cannot be undone: pull requests, issue numbers and history go with them.\n")
-		e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Scope())
+		e.printf("  Only these %d are deleted; anything else in %s is left alone.\n", len(doomed), e.Sandbox.Org)
 		if err := e.confirm(); err != nil {
 			return err
 		}

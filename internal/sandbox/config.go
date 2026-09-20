@@ -90,14 +90,6 @@ func Names(fleetDir, configPath string) []string {
 	return names
 }
 
-// Scope is where the sandbox writes: the org, or org/project on a forge that has projects.
-func (s Sandbox) Scope() string {
-	if s.DefaultProject != "" {
-		return s.Org + "/" + s.DefaultProject
-	}
-	return s.Org
-}
-
 // LoadConfig reads sandboxes.yaml.
 func LoadConfig(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
