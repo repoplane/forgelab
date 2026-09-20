@@ -69,12 +69,7 @@ const workers = 8
 
 // Open resolves the sandbox and builds the forge client.
 func Open(o Options) (*Env, error) {
-	if o.FleetDir == "" {
-		o.FleetDir = "."
-	}
-	if o.ConfigPath == "" {
-		o.ConfigPath = filepath.Join(o.FleetDir, ConfigFile)
-	}
+	o.FleetDir, o.ConfigPath = resolvePaths(o.FleetDir, o.ConfigPath)
 	if o.In == nil {
 		o.In = os.Stdin
 	}

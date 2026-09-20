@@ -52,3 +52,20 @@ func TestSandboxResolution(t *testing.T) {
 		}
 	}
 }
+
+// Sandbox names are typed in a shell and offered by completion, so a name a shell would
+// interpret is refused at load -- and never listed, even from a config that fails to load.
+func TestHostileSandboxNames(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ConfigFile)
+	config := "version: 1\nsandboxes:\n  ok: {forge: github, org: x, token_env: T}\n  '$(reboot)': {forge: github, org: x, token_env: T}\n"
+	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Error("want the config refused")
+	}
+	if names := Names(dir, ""); len(names) != 0 {
+		t.Errorf("Names = %q, want none from a config that does not load", names)
+	}
+}

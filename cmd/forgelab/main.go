@@ -33,8 +33,6 @@ Commands:
 Flags:
 `
 
-var stderr = os.Stderr
-
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {

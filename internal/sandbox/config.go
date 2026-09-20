@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 
 	"gopkg.in/yaml.v3"
@@ -50,22 +51,37 @@ type Sandbox struct {
 	MarkerTopic string `yaml:"marker_topic"`
 }
 
-// Names lists the sandboxes a config declares, sorted; nil if the config cannot be read. It
-// exists for shell completion, which wants names and no errors.
-func Names(fleetDir, configPath string) []string {
+// sandboxName is what a sandbox may be called. The names are typed on a command line and
+// offered by shell completion, so they stay free of anything a shell would interpret.
+var sandboxName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// resolvePaths applies the defaults: the fleet is the current directory, and the config
+// sits in it.
+func resolvePaths(fleetDir, configPath string) (string, string) {
 	if fleetDir == "" {
 		fleetDir = "."
 	}
 	if configPath == "" {
 		configPath = filepath.Join(fleetDir, ConfigFile)
 	}
+	return fleetDir, configPath
+}
+
+// Names lists the sandboxes a config declares, sorted; nil if the config cannot be read. It
+// exists for shell completion, which wants names and no errors -- and whose input is a file
+// that may have come with somebody else's repository, so a name a shell could interpret is
+// never returned.
+func Names(fleetDir, configPath string) []string {
+	_, configPath = resolvePaths(fleetDir, configPath)
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		return nil
 	}
 	names := make([]string, 0, len(cfg.Sandboxes))
 	for name := range cfg.Sandboxes {
-		names = append(names, name)
+		if sandboxName.MatchString(name) {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	return names
@@ -91,6 +107,11 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.Version != configVersion {
 		return nil, fmt.Errorf("%s: version is %d, want %d", path, c.Version, configVersion)
+	}
+	for name := range c.Sandboxes {
+		if !sandboxName.MatchString(name) {
+			return nil, fmt.Errorf("%s: sandbox name %q: use letters, digits, '.', '_' and '-'", path, name)
+		}
 	}
 	return &c, nil
 }
