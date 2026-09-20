@@ -418,8 +418,8 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// DeleteNamespace removes a project forgelab made, once it holds nothing but the empty
-// repository it was born with. Only the first segment of a namespace is a project (see
+// DeleteNamespace removes a project forgelab made, once it holds nothing but the repository
+// it was born with. Only the first segment of a namespace is a project (see
 // Caps), and "" is the default one. The listing is read a few times over: it lags on a
 // repository deleted a moment ago.
 func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, error) {
@@ -482,13 +482,12 @@ func (c *Client) projectIsEmpty(ctx context.Context, project string) (bool, erro
 	if _, err := c.do(ctx, http.MethodGet, git(project, "/repositories"), "", nil, &all); err != nil {
 		return false, err
 	}
+	// The repository a project is born with came with a project forgelab made, so it is
+	// forgelab's whatever it holds by now: a consumer that works through every repository it
+	// finds would otherwise leave a project that can never be removed.
 	for _, r := range all.Value {
-		if !strings.EqualFold(r.Name, project) || r.IsDisabled {
+		if !strings.EqualFold(r.Name, project) {
 			return false, nil
-		}
-		branches, err := c.refsIn(ctx, project, r.Name, "heads/")
-		if err != nil || len(branches) > 0 {
-			return false, err
 		}
 	}
 	return true, nil

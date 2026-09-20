@@ -249,7 +249,8 @@ func TestDeleteNamespace(t *testing.T) {
 	}{
 		"born-with repository only": {project: ours, repos: `{"value":[{"id":"1","name":"Platform"}]}`, removed: true},
 		"something else":            {project: ours, repos: `{"value":[{"id":"1","name":"platform"},{"id":"2","name":"scratch"}]}`, kept: "not empty"},
-		"born-with, but pushed to":  {project: ours, repos: `{"value":[{"id":"1","name":"pushed"}]}`, kept: "not empty"},
+		// a consumer that touches every repository it finds must not leave the project stuck
+		"born-with, but pushed to": {project: ours, repos: `{"value":[{"id":"1","name":"pushed"}]}`, removed: true},
 		// boards, pipelines, a wiki: nothing forgelab can see, so nothing it may judge empty
 		"somebody else's": {project: `{"id":"p9","description":"Platform team"}`, repos: `{"value":[]}`, kept: "not created by forgelab"},
 	} {
@@ -267,10 +268,6 @@ func TestDeleteNamespace(t *testing.T) {
 				fmt.Fprint(w, tc.project)
 			case r.URL.Path == "/acme/"+project+"/_apis/git/repositories":
 				fmt.Fprint(w, tc.repos)
-			case strings.HasSuffix(r.URL.Path, "/pushed/refs"):
-				fmt.Fprint(w, `{"value":[{"name":"refs/heads/main","objectId":"abc"}]}`)
-			case strings.HasSuffix(r.URL.Path, "/refs"):
-				fmt.Fprint(w, `{"value":[]}`)
 			case r.URL.Path == "/acme/_apis/operations/op1":
 				fmt.Fprint(w, `{"id":"op1","status":"succeeded"}`)
 			default:

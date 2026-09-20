@@ -252,7 +252,8 @@ manage* and *Project and Team: Read, write & manage*: ForgeLab creates and delet
   listed, but every read of it answers 404. A good edge case for whatever consumes the listing.
 - Pull request ids are unique across the project, not per repository.
 - A new project is born with an empty repository of its own name. ForgeLab leaves it alone, and it
-  does not keep `destroy` from removing the project.
+  never keeps `destroy` from removing the project — not even once something has been pushed to it,
+  as a consumer that works through every repository it finds will do.
 
 [`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories at the root, each a
 shape that forge integrations trip on, and three more in namespaces.
