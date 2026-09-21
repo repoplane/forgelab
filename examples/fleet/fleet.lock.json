@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fleet_digest": "sha256:099e7e86e131c90302d00b90400cc3b02ff4784e02efda97ed564a6d6a8ef1da",
+  "fleet_digest": "sha256:f98892ed1bcbc67ce764531a0dd6a6c24e4a03e45e03f0916fc159d7298e5ce6",
   "repos": [
     {
       "name": "archived",
@@ -100,6 +100,27 @@
       "baseline": "70db57b72fefb2a8fa929a63c5529d91f2f5797c"
     },
     {
+      "name": "platform/core/api",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "platform",
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "62e36cb7e980433747c67f06e58ab5d58a50ba8f"
+    },
+    {
+      "name": "platform/tooling",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "50888a39c54ab8007345cdfd96c3a6688ba7d71f"
+    },
+    {
       "name": "public",
       "default_branch": "main",
       "visibility": "public",
@@ -116,6 +137,17 @@
       "archived": false,
       "empty": false,
       "baseline": "bbb40bd73d1de8c5995192cb7f973a0ddf7217d8"
+    },
+    {
+      "name": "services/api",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "9c448efac08253da79fb263049fccc8518f175fe"
     },
     {
       "name": "tagged",

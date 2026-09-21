@@ -22,6 +22,7 @@ import (
 	tclog "github.com/testcontainers/testcontainers-go/log"
 	"github.com/testcontainers/testcontainers-go/modules/forgejo"
 
+	"github.com/repoplane/forgelab/internal/forge"
 	"github.com/repoplane/forgelab/internal/sandbox"
 )
 
@@ -237,7 +238,7 @@ func (l *lab) mustAPI(method, path, body string) {
 	}
 }
 
-func (l *lab) repo(name string) string { return "/repos/" + l.org + "/" + name }
+func (l *lab) repo(name string) string { return "/repos/" + l.org + "/" + forge.FlatName(name) }
 
 // recorder notes every API request forgelab makes. git traffic is a subprocess and is not
 // seen here.

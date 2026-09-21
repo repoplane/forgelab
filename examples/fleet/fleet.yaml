@@ -1,11 +1,13 @@
-# An example fleet: twelve tiny repositories, each one shape a forge integration trips on.
+# An example fleet: twelve tiny repositories at the root, each one shape a forge integration
+# trips on, and three more in namespaces.
 #
-# The directory tree under repos/ IS the fleet: repos/<name>/ is a repository, so adding
-# one needs no entry here. This file carries only what a directory cannot express, and
-# every field is optional.
+# The directory tree under repos/ IS the fleet: a directory that holds a file is a repository,
+# and one that holds only directories is a namespace, so adding either needs no entry here.
+# This file carries only what a directory cannot express, and every field is optional.
 #
-# Twelve is chosen for its divisors: listing the fleet with a page size of 12, 6, 5, 4, 3
-# or 1 gives an exact single page, exact multiples, a short tail and a deep cursor chain.
+# Twelve is chosen for its divisors: listing the root with a page size of 12, 6, 5, 4, 3 or 1
+# gives an exact single page, exact multiples, a short tail and a deep cursor chain. Where a
+# namespace is only a prefix of the name (GitHub, Forgejo) the listing holds all fifteen.
 
 version: 1
 
@@ -50,3 +52,11 @@ repos:
 
   parser-svc:
     topics: [service]
+
+  # Namespaces are directories that hold only directories. They land as subgroups on GitLab,
+  # as a project (then a "-"-joined name) on Azure DevOps, and as a "-"-joined name elsewhere:
+  # platform/core/api is <group>/platform/core/api, platform/_git/core-api, platform-core-api.
+  services/api:
+    topics: [service]
+  platform/core/api:
+    topics: [service, platform]

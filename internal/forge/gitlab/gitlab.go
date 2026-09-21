@@ -26,16 +26,18 @@ const DefaultBaseURL = "https://gitlab.com"
 // maxRateLimitWait bounds how long a request sleeps on a 429 before giving up.
 const maxRateLimitWait = 90 * time.Second
 
-// Client talks to one group.
+// Client talks to one group, and to the subgroups the fleet's namespaces map to.
 type Client struct {
 	baseURL string
 	group   string
 	token   string
 	http    *http.Client
 
-	groupID struct {
+	// groups remembers the group and its subgroups by namespace; "" is the group itself. The
+	// lock is held across a lookup, so that two creates in a new subgroup make it once.
+	groups struct {
 		sync.Mutex
-		id int
+		byNS map[string]groupInfo
 	}
 
 	sleep func(context.Context, time.Duration) error // swapped out in tests
@@ -162,37 +164,82 @@ func (c *Client) project(name string) string {
 }
 
 // Caps: everything forgelab declares has a home here.
-func (c *Client) Caps() forge.Caps { return forge.Caps{Topics: true, Visibility: true} }
+func (c *Client) Caps() forge.Caps {
+	return forge.Caps{Topics: true, Visibility: true, NamespaceDepth: forge.AnyDepth}
+}
 
 // EnsureOrg only checks: on gitlab.com a top-level group cannot be created through the API.
 func (c *Client) EnsureOrg(ctx context.Context) error {
-	_, err := c.namespaceID(ctx)
+	c.groups.Lock()
+	defer c.groups.Unlock()
+	_, _, err := c.groupOf(ctx, "", false)
 	return err
 }
 
-func (c *Client) namespaceID(ctx context.Context) (int, error) {
-	c.groupID.Lock()
-	defer c.groupID.Unlock()
-	if c.groupID.id != 0 {
-		return c.groupID.id, nil
+type groupInfo struct {
+	ID          int     `json:"id"`
+	FullPath    string  `json:"full_path"`
+	Visibility  string  `json:"visibility"`
+	Description string  `json:"description"`
+	Deleting    *string `json:"marked_for_deletion_on"`
+}
+
+// groupOf resolves a namespace to its group; the caller holds c.groups. The sandbox's own
+// group must exist. A missing subgroup is reported as such, or with create is made, parents
+// first, as visible as its parent: a subgroup cannot be more, and a public fixture needs
+// every group above it to be.
+func (c *Client) groupOf(ctx context.Context, ns string, create bool) (groupInfo, bool, error) {
+	if g, ok := c.groups.byNS[ns]; ok {
+		return g, true, nil
 	}
-	var g struct {
-		ID int `json:"id"`
+	full := c.group
+	if ns != "" {
+		full += "/" + ns
 	}
-	_, err := c.do(ctx, http.MethodGet, "/groups/"+url.PathEscape(c.group)+"?with_projects=false", nil, &g)
-	if hasStatus(err, http.StatusNotFound) {
-		return 0, fmt.Errorf("group %q does not exist, or the token cannot see it", c.group)
+	var g groupInfo
+	_, err := c.do(ctx, http.MethodGet, "/groups/"+url.PathEscape(full)+"?with_projects=false", nil, &g)
+	switch {
+	case err == nil:
+	case !hasStatus(err, http.StatusNotFound):
+		return groupInfo{}, false, err
+	case ns == "":
+		return groupInfo{}, false, fmt.Errorf("group %q does not exist, or the token cannot see it", c.group)
+	case !create:
+		return groupInfo{}, false, nil
+	default:
+		parentNS, leaf := "", ns
+		if i := strings.LastIndex(ns, "/"); i >= 0 {
+			parentNS, leaf = ns[:i], ns[i+1:]
+		}
+		parent, _, err := c.groupOf(ctx, parentNS, true)
+		if err != nil {
+			return groupInfo{}, false, err
+		}
+		// A subgroup on its way out still answers, and keeps its path: nothing can be put in it.
+		if parent.Deleting != nil {
+			return groupInfo{}, false, fmt.Errorf("subgroup %s is pending deletion: remove it for good on GitLab, or wait for it to go", parent.FullPath)
+		}
+		_, err = c.do(ctx, http.MethodPost, "/groups", map[string]any{
+			"name": leaf, "path": leaf, "parent_id": parent.ID, "visibility": parent.Visibility,
+			"description": forge.NamespaceMarker,
+		}, &g)
+		if err != nil {
+			return groupInfo{}, false, fmt.Errorf("create subgroup %s: %w", full, err)
+		}
 	}
-	if err != nil {
-		return 0, err
+	if g.Deleting != nil {
+		return g, true, nil // not remembered: it is about to change under us
 	}
-	c.groupID.id = g.ID
-	return g.ID, nil
+	if c.groups.byNS == nil {
+		c.groups.byNS = map[string]groupInfo{}
+	}
+	c.groups.byNS[ns] = g
+	return g, true, nil
 }
 
 func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error) {
 	var raw struct {
-		Path          string   `json:"path"`
+		FullPath      string   `json:"path_with_namespace"`
 		DefaultBranch string   `json:"default_branch"`
 		Visibility    string   `json:"visibility"`
 		Archived      bool     `json:"archived"`
@@ -208,12 +255,12 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 	}
 	// A project answering under another path was renamed; one scheduled for deletion is
 	// already gone as far as the fleet is concerned.
-	if !strings.EqualFold(raw.Path, name) || raw.Deleting != nil {
+	if !strings.EqualFold(raw.FullPath, c.group+"/"+name) || raw.Deleting != nil {
 		return forge.Repo{}, false, nil
 	}
 
 	r := forge.Repo{
-		Name:          raw.Path,
+		Name:          name,
 		DefaultBranch: raw.DefaultBranch,
 		Visibility:    raw.Visibility,
 		Archived:      raw.Archived,
@@ -235,14 +282,23 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 // Create sets the topics in the same call, so a project never exists unmarked. It ignores
 // defaultBranch: the first branch pushed becomes the default, and UpdateSettings pins it.
 func (c *Client) Create(ctx context.Context, name, visibility, _ string, topics []string) error {
-	ns, err := c.namespaceID(ctx)
+	ns, leaf := "", name
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		ns, leaf = name[:i], name[i+1:]
+	}
+	c.groups.Lock()
+	g, _, err := c.groupOf(ctx, ns, true)
+	c.groups.Unlock()
 	if err != nil {
 		return err
 	}
+	if g.Deleting != nil {
+		return fmt.Errorf("subgroup %s is pending deletion: remove it for good on GitLab, or wait for it to go", g.FullPath)
+	}
 	_, err = c.do(ctx, http.MethodPost, "/projects", map[string]any{
-		"name":                   name,
-		"path":                   name,
-		"namespace_id":           ns,
+		"name":                   leaf,
+		"path":                   leaf,
+		"namespace_id":           g.ID,
 		"visibility":             visibility,
 		"topics":                 topics,
 		"initialize_with_readme": false,
@@ -292,6 +348,57 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	_, _ = c.do(ctx, http.MethodDelete,
 		byID+"?permanently_remove=true&full_path="+url.QueryEscape(after.FullPath), nil, nil)
 	return nil
+}
+
+// DeleteNamespace removes a subgroup forgelab made, with all it holds, and for good, the way
+// Delete does a project: a first DELETE may only schedule it, a second naming its new path
+// removes it now. The removal is waited for, since GitLab deletes in the background and a
+// re-seed needs the path.
+func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, error) {
+	if ns == "" {
+		return false, "", nil // the sandbox's own group
+	}
+	c.groups.Lock()
+	defer c.groups.Unlock()
+	g, found, err := c.groupOf(ctx, ns, false)
+	if err != nil || !found {
+		return false, "", err
+	}
+	if !strings.HasPrefix(g.Description, forge.NamespaceMarker) {
+		return false, "not created by forgelab", nil
+	}
+	for known := range c.groups.byNS {
+		if known == ns || strings.HasPrefix(known, ns+"/") {
+			delete(c.groups.byNS, known)
+		}
+	}
+	byID := "/groups/" + strconv.Itoa(g.ID)
+	// One that an earlier destroy only managed to schedule goes straight to the second DELETE.
+	if g.Deleting == nil {
+		if _, err := c.do(ctx, http.MethodDelete, byID, nil, nil); err != nil {
+			return false, "", err
+		}
+	}
+
+	purged := false
+	for attempt := 1; attempt <= 30; attempt++ {
+		var after groupInfo
+		if _, err := c.do(ctx, http.MethodGet, byID+"?with_projects=false", nil, &after); err != nil {
+			if hasStatus(err, http.StatusNotFound) {
+				return true, "", nil
+			}
+			return false, "", err
+		}
+		if after.Deleting != nil && !purged {
+			purged = true
+			_, _ = c.do(ctx, http.MethodDelete,
+				byID+"?permanently_remove=true&full_path="+url.QueryEscape(after.FullPath), nil, nil)
+		}
+		if err := c.sleep(ctx, time.Second); err != nil {
+			return false, "", err
+		}
+	}
+	return false, "still being deleted by GitLab", nil
 }
 
 func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settings) error {

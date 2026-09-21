@@ -41,25 +41,32 @@ func TestGet(t *testing.T) {
 		}
 		switch r.URL.EscapedPath() {
 		case svc:
-			fmt.Fprint(w, `{"path":"svc","default_branch":"main","visibility":"private","archived":true,"empty_repo":false,"topics":["a"]}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/svc","default_branch":"main","visibility":"private","archived":true,"empty_repo":false,"topics":["a"]}`)
 		// just pushed: empty_repo has not caught up, the repository has
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Ffresh":
-			fmt.Fprint(w, `{"path":"fresh","visibility":"public","empty_repo":true}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/fresh","visibility":"public","empty_repo":true}`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Ffresh/repository/branches":
 			fmt.Fprint(w, `[{"name":"main","commit":{"id":"abc"}}]`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Fbare":
-			fmt.Fprint(w, `{"path":"bare","visibility":"private","empty_repo":true}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/bare","visibility":"private","empty_repo":true}`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Fbare/repository/branches":
 			fmt.Fprint(w, `[]`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Fold-name":
-			fmt.Fprint(w, `{"path":"new-name"}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/new-name"}`)
 		case "/api/v4/projects/acme-sandbox%2Fservices%2Fdoomed":
-			fmt.Fprint(w, `{"path":"doomed","marked_for_deletion_on":"2026-09-26"}`)
+			fmt.Fprint(w, `{"path_with_namespace":"acme-sandbox/services/doomed","marked_for_deletion_on":"2026-09-26"}`)
+		// a namespace is more of the same path; its leaf alone says nothing
+		case "/api/v4/projects/acme-sandbox%2Fservices%2Fcore%2Fapi":
+			fmt.Fprint(w, `{"path":"api","path_with_namespace":"acme-sandbox/services/core/api","visibility":"private"}`)
 		default:
 			http.NotFound(w, r)
 		}
 	})
 
+	if r, found, err := c.Get(ctx, "core/api"); err != nil || !found || r.Name != "core/api" {
+		t.Errorf("core/api: %+v found=%t err=%v", r, found, err)
+	}
+	*seen = nil
 	r, found, err := c.Get(ctx, "svc")
 	if err != nil || !found || r.Visibility != "private" || !r.Archived || r.Empty || len(r.Topics) != 1 {
 		t.Errorf("svc: %+v found=%t err=%v", r, found, err)
@@ -215,5 +222,101 @@ func TestRateLimitIsWaitedOut(t *testing.T) {
 	})
 	if err := c.SetTopics(ctx, "svc", nil); err != nil || calls != 2 {
 		t.Errorf("calls=%d err=%v", calls, err)
+	}
+}
+
+// A namespace is a chain of subgroups: made on the way to the first project that needs
+// them, each as visible as its parent, and never looked up twice.
+func TestCreateMakesSubgroups(t *testing.T) {
+	var posts []map[string]any
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v4/groups/acme-sandbox/services":
+			fmt.Fprint(w, `{"id":7,"visibility":"public"}`)
+		case r.Method == http.MethodGet:
+			http.NotFound(w, r)
+		default:
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			posts = append(posts, body)
+			fmt.Fprintf(w, `{"id":%d,"visibility":"public"}`, 7+len(posts))
+		}
+	})
+	if err := c.Create(ctx, "platform/core/api", "private", "main", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, "platform/core/cli", "private", "main", nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []map[string]any{
+		{"name": "platform", "path": "platform", "parent_id": float64(7), "visibility": "public", "description": forge.NamespaceMarker},
+		{"name": "core", "path": "core", "parent_id": float64(8), "visibility": "public", "description": forge.NamespaceMarker},
+	}
+	if len(posts) != 4 || fmt.Sprint(posts[:2]) != fmt.Sprint(want) {
+		t.Errorf("subgroups: %v", posts)
+	}
+	if posts[2]["path"] != "api" || posts[2]["namespace_id"] != float64(9) || posts[3]["namespace_id"] != float64(9) {
+		t.Errorf("projects: %v", posts[2:])
+	}
+	if n := strings.Count(strings.Join(*seen, "\n"), "GET "); n != 3 {
+		t.Errorf("want one lookup per group, got %d:\n%s", n, strings.Join(*seen, "\n"))
+	}
+}
+
+// The marker alone decides: what a marked subgroup holds goes with it, as a marked
+// repository's branches and requests do.
+func TestDeleteNamespace(t *testing.T) {
+	const core = "/api/v4/groups/acme-sandbox%2Fservices%2Fcore"
+	for name, tc := range map[string]struct {
+		group   string
+		removed bool
+		kept    string
+		deletes int
+	}{
+		"ours":             {group: `{"id":9,"description":"forgelab-managed"}`, removed: true, deletes: 2},
+		"somebody else's":  {group: `{"id":9,"description":"Platform team"}`, kept: "not created by forgelab"},
+		"scheduled before": {group: `{"id":9,"description":"forgelab-managed","marked_for_deletion_on":"2026-09-26"}`, removed: true, deletes: 1},
+	} {
+		deletes := 0
+		c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodDelete:
+				deletes++
+			case r.URL.EscapedPath() == core:
+				fmt.Fprint(w, tc.group)
+			case deletes < tc.deletes: // scheduled only, and renamed: the second DELETE names that path
+				fmt.Fprint(w, `{"full_path":"acme-sandbox/services/core-deletion_scheduled-9","marked_for_deletion_on":"2026-09-26"}`)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		removed, kept, err := c.DeleteNamespace(ctx, "core")
+		if err != nil || removed != tc.removed || kept != tc.kept || deletes != tc.deletes {
+			t.Errorf("%s: removed=%t kept=%q deletes=%d err=%v", name, removed, kept, deletes, err)
+		}
+		if strings.Contains(strings.Join(*seen, "\n"), "/projects") {
+			t.Errorf("%s: what the subgroup holds is nobody's business: %v", name, *seen)
+		}
+	}
+
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
+	for _, ns := range []string{"gone", ""} {
+		if removed, kept, err := c.DeleteNamespace(ctx, ns); removed || kept != "" || err != nil {
+			t.Errorf("%q is neither removed nor kept: removed=%t kept=%q err=%v", ns, removed, kept, err)
+		}
+	}
+	if len(*seen) != 1 {
+		t.Errorf("the sandbox's own group is not even looked at: %v", *seen)
+	}
+}
+
+// A subgroup that GitLab has only scheduled for deletion still answers, and keeps its path.
+func TestCreateRefusesSubgroupPendingDeletion(t *testing.T) {
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":9,"full_path":"acme-sandbox/services/core","marked_for_deletion_on":"2026-09-26"}`)
+	})
+	err := c.Create(ctx, "core/api", "private", "main", nil)
+	if err == nil || !strings.Contains(err.Error(), "pending deletion") || len(*seen) != 1 {
+		t.Errorf("err=%v seen=%v", err, *seen)
 	}
 }

@@ -32,7 +32,9 @@ const (
 	zeroSHA          = "0000000000000000000000000000000000000000"
 )
 
-// Client talks to one project in one organisation.
+// Client talks to one organisation. Repositories without a namespace live in its default
+// project; a namespace's first segment names another project, and the rest is joined into the
+// name. Every project is made by Create when first needed, the default one included.
 type Client struct {
 	baseURL string
 	org     string
@@ -40,9 +42,12 @@ type Client struct {
 	token   string
 	http    *http.Client
 
-	projectID struct {
+	// projects remembers project ids by name. The lock is held across a lookup, so that two
+	// creates in a new project make it once.
+	projects struct {
 		sync.Mutex
-		id string
+		ids  map[string]string
+		born map[string]bool // made by this client, so still holding only what they came with
 	}
 
 	sleep func(context.Context, time.Duration) error // swapped out in tests
@@ -81,7 +86,7 @@ func New(baseURL, org, project, token string, hc *http.Client) (*Client, error) 
 
 // Caps: no topics (so no marker), visibility belongs to the project, and a disabled
 // repository answers 404 to everything but the project's listing.
-func (c *Client) Caps() forge.Caps { return forge.Caps{ArchivedUnreadable: true} }
+func (c *Client) Caps() forge.Caps { return forge.Caps{ArchivedUnreadable: true, NamespaceDepth: 1} }
 
 type statusError struct {
 	code int
@@ -153,35 +158,133 @@ func (c *Client) do(ctx context.Context, method, path, query string, body, out a
 	}
 }
 
-func (c *Client) git(suffix string) string {
-	return "/" + url.PathEscape(c.project) + "/_apis/git" + suffix
+// split lands a fleet name: "dotfiles" is that repository in the sandbox's project, and
+// "platform/core/api" is core-api in the project platform.
+func (c *Client) split(name string) (project, repo string, err error) {
+	project, rest, nested := strings.Cut(name, "/")
+	if !nested {
+		return c.project, name, nil
+	}
+	// Otherwise platform/x and x would be one repository, which the fleet cannot see coming.
+	if strings.EqualFold(project, c.project) {
+		return "", "", fmt.Errorf("namespace %q is the sandbox's own project, where repositories without a namespace already go: rename one of the two", project)
+	}
+	return project, forge.FlatName(rest), nil
 }
 
-// EnsureOrg checks the project exists. forgelab does not create projects: that is a slow,
-// asynchronous operation with a 28-day soft delete behind it.
+func git(project, suffix string) string {
+	return "/" + url.PathEscape(project) + "/_apis/git" + suffix
+}
+
+// EnsureOrg checks the organisation answers to this token: an organisation cannot be created
+// through the API. Projects are made by Create.
 func (c *Client) EnsureOrg(ctx context.Context) error {
-	_, err := c.projectIdent(ctx)
+	_, err := c.do(ctx, http.MethodGet, "/_apis/projects", "$top=1", nil, nil)
+	if hasStatus(err, http.StatusNotFound) {
+		return fmt.Errorf("organisation %q does not exist, or the token cannot see it", c.org)
+	}
 	return err
 }
 
-func (c *Client) projectIdent(ctx context.Context) (string, error) {
-	c.projectID.Lock()
-	defer c.projectID.Unlock()
-	if c.projectID.id != "" {
-		return c.projectID.id, nil
+// projectIdent resolves a project to its id; the caller holds c.projects. One that is missing
+// is reported as such, or with create is made.
+func (c *Client) projectIdent(ctx context.Context, project string, create bool) (string, bool, error) {
+	if id, ok := c.projects.ids[project]; ok {
+		return id, true, nil
 	}
 	var p struct {
 		ID string `json:"id"`
 	}
-	_, err := c.do(ctx, http.MethodGet, "/_apis/projects/"+url.PathEscape(c.project), "", nil, &p)
-	if hasStatus(err, http.StatusNotFound) {
-		return "", fmt.Errorf("project %q does not exist in organisation %q, or the token cannot see it", c.project, c.org)
+	get := func() error {
+		_, err := c.do(ctx, http.MethodGet, "/_apis/projects/"+url.PathEscape(project), "", nil, &p)
+		return err
 	}
+	err := get()
+	switch {
+	case err == nil:
+	case !hasStatus(err, http.StatusNotFound):
+		return "", false, err
+	case !create:
+		return "", false, nil
+	default:
+		if err := c.createProject(ctx, project); err != nil {
+			return "", false, fmt.Errorf("create project %s: %w", project, err)
+		}
+		if err := get(); err != nil {
+			return "", false, err
+		}
+		if c.projects.born == nil {
+			c.projects.born = map[string]bool{}
+		}
+		c.projects.born[project] = true
+	}
+	if c.projects.ids == nil {
+		c.projects.ids = map[string]string{}
+	}
+	c.projects.ids[project] = p.ID
+	return p.ID, true, nil
+}
+
+// createProject makes a private Git project on the organisation's default process, and waits
+// for it: Azure DevOps builds a project in the background.
+func (c *Client) createProject(ctx context.Context, project string) error {
+	var procs struct {
+		Value []struct {
+			ID        string `json:"id"`
+			IsDefault bool   `json:"isDefault"`
+		} `json:"value"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/_apis/process/processes", "", nil, &procs); err != nil {
+		return err
+	}
+	if len(procs.Value) == 0 {
+		return errors.New("the organisation lists no process to create it on")
+	}
+	process := procs.Value[0].ID
+	for _, p := range procs.Value {
+		if p.IsDefault {
+			process = p.ID
+		}
+	}
+	var op operation
+	_, err := c.do(ctx, http.MethodPost, "/_apis/projects", "", map[string]any{
+		"name":        project,
+		"description": forge.NamespaceMarker,
+		"visibility":  "private",
+		"capabilities": map[string]any{
+			"versioncontrol":  map[string]any{"sourceControlType": "Git"},
+			"processTemplate": map[string]any{"templateTypeId": process},
+		},
+	}, &op)
 	if err != nil {
-		return "", err
+		return err
 	}
-	c.projectID.id = p.ID
-	return p.ID, nil
+	return c.wait(ctx, op)
+}
+
+type operation struct {
+	ID            string `json:"id"`
+	Status        string `json:"status"`
+	ResultMessage string `json:"resultMessage"`
+}
+
+// wait polls a background operation, for about three minutes.
+func (c *Client) wait(ctx context.Context, op operation) error {
+	for attempt := 1; attempt <= 90; attempt++ {
+		if err := c.sleep(ctx, 2*time.Second); err != nil {
+			return err
+		}
+		if _, err := c.do(ctx, http.MethodGet, "/_apis/operations/"+url.PathEscape(op.ID), "", nil, &op); err != nil {
+			return err
+		}
+		switch op.Status {
+		case "succeeded":
+			return nil
+		case "failed", "cancelled":
+			return fmt.Errorf("operation %s: %s", op.Status, op.ResultMessage)
+		}
+	}
+	return fmt.Errorf("operation %s is still %s", op.ID, op.Status)
 }
 
 type repository struct {
@@ -189,6 +292,8 @@ type repository struct {
 	Name          string `json:"name"`
 	DefaultBranch string `json:"defaultBranch"`
 	IsDisabled    bool   `json:"isDisabled"`
+
+	project string // where lookup found it
 }
 
 // lookup finds a repository by name. Azure DevOps caches both ways of asking for about a
@@ -202,8 +307,12 @@ type repository struct {
 // So: GET first, and on a 404 the listing decides between "disabled" and "missing". If the
 // listing still calls it enabled, one of the two caches is stale; look again shortly.
 func (c *Client) lookup(ctx context.Context, name string) (repository, bool, error) {
-	var r repository
-	_, err := c.do(ctx, http.MethodGet, c.git("/repositories/"+url.PathEscape(name)), "", nil, &r)
+	project, name, err := c.split(name)
+	if err != nil {
+		return repository{}, false, err
+	}
+	r := repository{project: project}
+	_, err = c.do(ctx, http.MethodGet, git(project, "/repositories/"+url.PathEscape(name)), "", nil, &r)
 	if err == nil {
 		return r, strings.EqualFold(r.Name, name), nil
 	}
@@ -214,7 +323,10 @@ func (c *Client) lookup(ctx context.Context, name string) (repository, bool, err
 		var all struct {
 			Value []repository `json:"value"`
 		}
-		if _, err := c.do(ctx, http.MethodGet, c.git("/repositories"), "", nil, &all); err != nil {
+		if _, err := c.do(ctx, http.MethodGet, git(project, "/repositories"), "", nil, &all); err != nil {
+			if hasStatus(err, http.StatusNotFound) {
+				return repository{}, false, nil // no such project yet: Create makes it
+			}
 			return repository{}, false, err
 		}
 		i := slices.IndexFunc(all.Value, func(r repository) bool { return strings.EqualFold(r.Name, name) })
@@ -222,6 +334,7 @@ func (c *Client) lookup(ctx context.Context, name string) (repository, bool, err
 		case i < 0:
 			return repository{}, false, nil
 		case all.Value[i].IsDisabled:
+			all.Value[i].project = project
 			return all.Value[i], true, nil
 		case attempt == 4:
 			return repository{}, false, nil // listed as enabled, yet unreadable: gone
@@ -262,14 +375,26 @@ func (c *Client) Get(ctx context.Context, name string) (forge.Repo, bool, error)
 // Create ignores visibility, defaultBranch and topics: none of them exists per repository at
 // creation. The first branch pushed becomes the default.
 func (c *Client) Create(ctx context.Context, name, _, _ string, _ []string) error {
-	pid, err := c.projectIdent(ctx)
+	project, name, err := c.split(name)
 	if err != nil {
 		return err
 	}
-	_, err = c.do(ctx, http.MethodPost, c.git("/repositories"), "", map[string]any{
+	c.projects.Lock()
+	pid, _, err := c.projectIdent(ctx, project, true)
+	born := c.projects.born[project]
+	c.projects.Unlock()
+	if err != nil {
+		return err
+	}
+	_, err = c.do(ctx, http.MethodPost, git(project, "/repositories"), "", map[string]any{
 		"name":    name,
 		"project": map[string]any{"id": pid},
 	}, nil)
+	// A project made a moment ago came with an empty repository of its own name, and a
+	// fixture by that name takes it over. In any other project a conflict is a conflict.
+	if hasStatus(err, http.StatusConflict) && born && strings.EqualFold(name, project) {
+		return nil
+	}
 	return err
 }
 
@@ -282,15 +407,52 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 	}
 	// A disabled repository answers 404 to everything, its own deletion included.
 	if r.IsDisabled {
-		if _, err := c.do(ctx, http.MethodPatch, c.git("/repositories/"+r.ID), "", map[string]any{"isDisabled": false}, nil); err != nil {
+		if _, err := c.do(ctx, http.MethodPatch, git(r.project, "/repositories/"+r.ID), "", map[string]any{"isDisabled": false}, nil); err != nil {
 			return fmt.Errorf("enable before delete: %w", err)
 		}
 	}
-	if _, err := c.do(ctx, http.MethodDelete, c.git("/repositories/"+r.ID), "", nil, nil); err != nil {
+	if _, err := c.do(ctx, http.MethodDelete, git(r.project, "/repositories/"+r.ID), "", nil, nil); err != nil {
 		return err
 	}
-	_, _ = c.do(ctx, http.MethodDelete, c.git("/recycleBin/repositories/"+r.ID), "", nil, nil)
+	_, _ = c.do(ctx, http.MethodDelete, git(r.project, "/recycleBin/repositories/"+r.ID), "", nil, nil)
 	return nil
+}
+
+// DeleteNamespace removes a project forgelab made, with all it holds. Only the first segment
+// of a namespace is a project (see Caps), and "" is the default one.
+func (c *Client) DeleteNamespace(ctx context.Context, ns string) (bool, string, error) {
+	if strings.Contains(ns, "/") {
+		return false, "", nil
+	}
+	if ns == "" {
+		ns = c.project
+	}
+	c.projects.Lock()
+	defer c.projects.Unlock()
+	var p struct {
+		ID          string `json:"id"`
+		Description string `json:"description"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/_apis/projects/"+url.PathEscape(ns), "", nil, &p); err != nil {
+		if hasStatus(err, http.StatusNotFound) {
+			return false, "", nil
+		}
+		return false, "", err
+	}
+	if !strings.HasPrefix(p.Description, forge.NamespaceMarker) {
+		return false, "not created by forgelab", nil
+	}
+	delete(c.projects.ids, ns)
+	delete(c.projects.born, ns)
+
+	var op operation
+	if _, err := c.do(ctx, http.MethodDelete, "/_apis/projects/"+p.ID, "", nil, &op); err != nil {
+		return false, "", err
+	}
+	if err := c.wait(ctx, op); err != nil {
+		return false, "", err
+	}
+	return true, "", nil
 }
 
 func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settings) error {
@@ -302,7 +464,7 @@ func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settin
 		return fmt.Errorf("repository %q not found", name)
 	}
 	patch := func(fields map[string]any) error {
-		_, err := c.do(ctx, http.MethodPatch, c.git("/repositories/"+r.ID), "", fields, nil)
+		_, err := c.do(ctx, http.MethodPatch, git(r.project, "/repositories/"+r.ID), "", fields, nil)
 		return err
 	}
 	// A disabled repository rejects everything else, so enable first and disable last.
@@ -336,6 +498,14 @@ type ref struct {
 
 // refs lists refs under a prefix such as "heads/", following the continuation token.
 func (c *Client) refs(ctx context.Context, name, filter string) ([]ref, error) {
+	project, name, err := c.split(name)
+	if err != nil {
+		return nil, err
+	}
+	return c.refsIn(ctx, project, name, filter)
+}
+
+func (c *Client) refsIn(ctx context.Context, project, name, filter string) ([]ref, error) {
 	var all []ref
 	for token := ""; ; {
 		q := "filter=" + url.QueryEscape(filter)
@@ -345,7 +515,7 @@ func (c *Client) refs(ctx context.Context, name, filter string) ([]ref, error) {
 		var page struct {
 			Value []ref `json:"value"`
 		}
-		hdr, err := c.do(ctx, http.MethodGet, c.git("/repositories/"+url.PathEscape(name)+"/refs"), q, nil, &page)
+		hdr, err := c.do(ctx, http.MethodGet, git(project, "/repositories/"+url.PathEscape(name)+"/refs"), q, nil, &page)
 		if err != nil {
 			return nil, err
 		}
@@ -370,7 +540,11 @@ func (c *Client) Branches(ctx context.Context, name string) ([]forge.Ref, error)
 
 // deleteRef updates the ref to the zero id, which needs the id it currently points at.
 func (c *Client) deleteRef(ctx context.Context, name, full string) error {
-	items, err := c.refs(ctx, name, strings.TrimPrefix(full, "refs/"))
+	project, name, err := c.split(name)
+	if err != nil {
+		return err
+	}
+	items, err := c.refsIn(ctx, project, name, strings.TrimPrefix(full, "refs/"))
 	if err != nil {
 		return err
 	}
@@ -385,7 +559,7 @@ func (c *Client) deleteRef(ctx context.Context, name, full string) error {
 			} `json:"value"`
 		}
 		body := []map[string]string{{"name": full, "oldObjectId": r.ObjectID, "newObjectId": zeroSHA}}
-		if _, err := c.do(ctx, http.MethodPost, c.git("/repositories/"+url.PathEscape(name)+"/refs"), "", body, &res); err != nil {
+		if _, err := c.do(ctx, http.MethodPost, git(project, "/repositories/"+url.PathEscape(name)+"/refs"), "", body, &res); err != nil {
 			return err
 		}
 		if len(res.Value) == 0 || !res.Value[0].Success {
@@ -409,6 +583,10 @@ func (c *Client) DeleteTag(ctx context.Context, name, tag string) error {
 }
 
 func (c *Client) OpenRequests(ctx context.Context, name string) ([]forge.Request, error) {
+	project, name, err := c.split(name)
+	if err != nil {
+		return nil, err
+	}
 	const pageSize = 100
 	var out []forge.Request
 	for skip := 0; ; skip += pageSize {
@@ -419,7 +597,7 @@ func (c *Client) OpenRequests(ctx context.Context, name string) ([]forge.Request
 			} `json:"value"`
 		}
 		q := fmt.Sprintf("searchCriteria.status=active&$top=%d&$skip=%d", pageSize, skip)
-		if _, err := c.do(ctx, http.MethodGet, c.git("/repositories/"+url.PathEscape(name)+"/pullrequests"), q, nil, &page); err != nil {
+		if _, err := c.do(ctx, http.MethodGet, git(project, "/repositories/"+url.PathEscape(name)+"/pullrequests"), q, nil, &page); err != nil {
 			return nil, err
 		}
 		for _, p := range page.Value {
@@ -434,8 +612,12 @@ func (c *Client) OpenRequests(ctx context.Context, name string) ([]forge.Request
 // CloseRequest abandons. The id is unique across the project, not per repository, and is
 // never reused.
 func (c *Client) CloseRequest(ctx context.Context, name string, number int) error {
-	_, err := c.do(ctx, http.MethodPatch,
-		c.git("/repositories/"+url.PathEscape(name)+"/pullrequests/"+strconv.Itoa(number)), "",
+	project, name, err := c.split(name)
+	if err != nil {
+		return err
+	}
+	_, err = c.do(ctx, http.MethodPatch,
+		git(project, "/repositories/"+url.PathEscape(name)+"/pullrequests/"+strconv.Itoa(number)), "",
 		map[string]any{"status": "abandoned"}, nil)
 	return err
 }
@@ -443,11 +625,15 @@ func (c *Client) CloseRequest(ctx context.Context, name string, number int) erro
 // GitURL embeds the token in the remote so that no credential helper is involved. Any
 // username works with a PAT as the password.
 func (c *Client) GitURL(name string) (string, error) {
+	project, name, err := c.split(name)
+	if err != nil {
+		return "", err
+	}
 	u, err := url.Parse(c.baseURL)
 	if err != nil {
 		return "", err
 	}
 	u.User = url.UserPassword("forgelab", c.token)
-	u = u.JoinPath(c.org, c.project, "_git", name)
+	u = u.JoinPath(c.org, project, "_git", name)
 	return u.String(), nil
 }

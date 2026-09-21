@@ -107,7 +107,7 @@ func (e *Env) compareOne(ctx context.Context, s *state) error {
 	}
 	if !found {
 		s.guards = append(s.guards, fmt.Sprintf("missing from %s: run `forgelab apply --sandbox %s`",
-			e.Sandbox.Scope(), e.Sandbox.Name))
+			e.Sandbox.Org, e.Sandbox.Name))
 		return nil
 	}
 	s.live = live

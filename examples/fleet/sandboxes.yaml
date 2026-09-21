@@ -22,11 +22,14 @@ sandboxes:
   #   org: forgelab-sandbox
   #   token_env: FORGELAB_GL_TOKEN
 
-  # An Azure DevOps sandbox is a project inside an organisation. Topics, visibility and the
-  # marker guard do not exist there, so use a project that holds nothing else.
+  # An Azure DevOps sandbox is an organisation. Repositories without a namespace go to its
+  # default project; a namespace's first directory is a project of its own. forgelab makes and
+  # removes them all. Topics,
+  # visibility and the marker guard do not exist there, so use an organisation that holds
+  # nothing else.
   #
   # ado:
   #   forge: azuredevops
   #   org: forgelab-sandbox
-  #   project: fleet
+  #   default_project: fleet
   #   token_env: FORGELAB_ADO_TOKEN

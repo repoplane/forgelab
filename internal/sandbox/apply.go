@@ -57,7 +57,7 @@ func (e *Env) Apply(ctx context.Context) error {
 	// marker, and has just printed exactly what it is about to do.
 	if len(todo) > 0 {
 		if err := e.Forge.EnsureOrg(ctx); err != nil {
-			return fmt.Errorf("org %s: %w", e.Sandbox.Scope(), err)
+			return fmt.Errorf("org %s: %w", e.Sandbox.Org, err)
 		}
 		err := forEach(ctx, todo, func(ctx context.Context, c *change) error {
 			if err := e.applyOne(ctx, c); err != nil {
@@ -154,7 +154,7 @@ func (e *Env) diffOne(ctx context.Context, c *change) error {
 	if caps.Topics && !slices.Contains(live.Topics, e.Sandbox.MarkerTopic) {
 		return &GuardError{Msg: fmt.Sprintf(
 			"%s/%s already exists without the %q topic: it is not forgelab's, and apply never adopts. Rename the fixture or remove that repository",
-			e.Sandbox.Scope(), want.Name, e.Sandbox.MarkerTopic)}
+			e.Sandbox.Org, want.Name, e.Sandbox.MarkerTopic)}
 	}
 	c.live = live
 

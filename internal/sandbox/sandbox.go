@@ -105,7 +105,7 @@ func Open(o Options) (*Env, error) {
 			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 		}
 	case "azuredevops":
-		if f, err = azuredevops.New(sb.BaseURL, sb.Org, sb.Project, token, o.HTTPClient); err != nil {
+		if f, err = azuredevops.New(sb.BaseURL, sb.Org, sb.DefaultProject, token, o.HTTPClient); err != nil {
 			return nil, fmt.Errorf("sandbox %q: %w", sb.Name, err)
 		}
 	default:
@@ -176,7 +176,7 @@ func (e *Env) confirm() error {
 
 func (e *Env) header(verb string, n int) {
 	e.printf("\n  %s   sandbox %s · %s · %s/%s · %d repositories\n\n",
-		verb, e.Sandbox.Name, e.Sandbox.Forge, strings.TrimRight(e.Sandbox.BaseURL, "/"), e.Sandbox.Scope(), n)
+		verb, e.Sandbox.Name, e.Sandbox.Forge, strings.TrimRight(e.Sandbox.BaseURL, "/"), e.Sandbox.Org, n)
 }
 
 // forEach runs fn over items with bounded concurrency and returns the first error by index.

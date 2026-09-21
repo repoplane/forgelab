@@ -44,9 +44,12 @@ type Sandbox struct {
 	Forge   string `yaml:"forge"`
 	BaseURL string `yaml:"base_url"`
 	Org     string `yaml:"org"` // on GitLab: the group's full path, e.g. acme-sandbox/services
-	// Project is required on Azure DevOps, where repositories live in a project inside the
-	// organisation, and unused elsewhere.
-	Project     string `yaml:"project"`
+	// DefaultProject is required on Azure DevOps, where every repository lives in a project,
+	// and unused elsewhere. It holds the repositories without a namespace; a namespace names
+	// a project of its own. forgelab makes and removes it like any other.
+	DefaultProject string `yaml:"default_project"`
+	// OldProject is what default_project was called; still parsed so that Sandbox can say so.
+	OldProject  string `yaml:"project"`
 	TokenEnv    string `yaml:"token_env"`
 	MarkerTopic string `yaml:"marker_topic"`
 }
@@ -85,14 +88,6 @@ func Names(fleetDir, configPath string) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-// Scope is where the sandbox writes: the org, or org/project on a forge that has projects.
-func (s Sandbox) Scope() string {
-	if s.Project != "" {
-		return s.Org + "/" + s.Project
-	}
-	return s.Org
 }
 
 // LoadConfig reads sandboxes.yaml.
@@ -138,8 +133,15 @@ func (c *Config) Sandbox(name string) (Sandbox, error) {
 			sb.BaseURL = azuredevops.DefaultBaseURL
 		}
 	}
-	if sb.Forge == "azuredevops" && sb.Project == "" {
-		return Sandbox{}, fmt.Errorf("sandbox %q: azuredevops needs a project", name)
+	if sb.OldProject != "" {
+		return Sandbox{}, fmt.Errorf("sandbox %q: project is now called default_project", name)
+	}
+	if sb.Forge == "azuredevops" && sb.DefaultProject == "" {
+		return Sandbox{}, fmt.Errorf("sandbox %q: azuredevops needs a default_project", name)
+	}
+	// Elsewhere there is no such thing, and destroy would list it as a namespace to remove.
+	if sb.Forge != "azuredevops" && sb.DefaultProject != "" {
+		return Sandbox{}, fmt.Errorf("sandbox %q: default_project only exists on azuredevops, not on %s", name, sb.Forge)
 	}
 	if sb.Forge == "" || sb.BaseURL == "" || sb.Org == "" || sb.TokenEnv == "" {
 		return Sandbox{}, fmt.Errorf("sandbox %q: forge, base_url, org and token_env are required", name)

@@ -3,7 +3,10 @@
 // verified a sandbox with the client under test would share its bugs.
 package forge
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Repo is a repository as the forge reports it.
 type Repo struct {
@@ -41,7 +44,19 @@ type Caps struct {
 	// ArchivedUnreadable: an archived repository cannot be read at all -- not its refs, not
 	// its requests. forgelab can then only check the flag itself.
 	ArchivedUnreadable bool
+	// NamespaceDepth: how many leading segments of a namespace become something of their own
+	// -- a subgroup, a project -- that Create makes and DeleteNamespace removes. Zero means a
+	// namespace is only a prefix of the name; AnyDepth means all of them.
+	NamespaceDepth int
 }
+
+// AnyDepth is a NamespaceDepth without a limit.
+const AnyDepth = -1
+
+// NamespaceMarker is the description of every namespace Create makes. Groups and projects
+// carry no topics, so this is their marker, and it says what the topic says of a repository:
+// work in it freely, and expect forgelab to remove it, with all it holds, and seed it again.
+const NamespaceMarker = "forgelab-managed"
 
 // Settings is a partial update: nil fields are left alone.
 type Settings struct {
@@ -50,9 +65,18 @@ type Settings struct {
 	Archived      *bool
 }
 
+// FlatName is a repository's name on a forge that cannot hold all of its namespaces: what it
+// cannot hold is joined with "-". The fleet refuses two names that join to the same one.
+func FlatName(name string) string { return strings.ReplaceAll(name, "/", "-") }
+
 // Forge is bound to one organisation. Every method addresses a repository by name inside
 // it. There is deliberately no List: forgelab looks declared repositories up by name and
 // never enumerates the organisation, so what it did not declare it cannot see.
+//
+// A name is the repository's path in the fleet, "platform/core/api": the namespaces it sits
+// in, then the repository. Each forge lands it where it can -- subgroups on GitLab, a project
+// and a FlatName on Azure DevOps, a FlatName elsewhere -- and creates the namespaces it needs
+// in Create.
 type Forge interface {
 	Caps() Caps
 
@@ -69,6 +93,12 @@ type Forge interface {
 	// sets them next, and deletes what it just created if that fails.
 	Create(ctx context.Context, name, visibility, defaultBranch string, topics []string) error
 	Delete(ctx context.Context, name string) error
+	// DeleteNamespace removes a namespace that carries the NamespaceMarker, with all it holds;
+	// otherwise kept says why it was left alone. A namespace
+	// that does not exist is neither removed nor kept. The namespace "" is where repositories
+	// without one live: removable where forgelab makes it (an Azure DevOps default project),
+	// and otherwise the sandbox itself, which is never touched.
+	DeleteNamespace(ctx context.Context, ns string) (removed bool, kept string, err error)
 
 	UpdateSettings(ctx context.Context, name string, s Settings) error
 	SetTopics(ctx context.Context, name string, topics []string) error

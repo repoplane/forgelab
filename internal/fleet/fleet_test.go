@@ -82,3 +82,55 @@ func TestDigestTracksContent(t *testing.T) {
 		t.Error("an edited fixture did not change the digest")
 	}
 }
+
+// The tree alone says which directory is which: one that holds a file is a repository, one
+// that holds only directories is a namespace.
+func TestLoadSpecWalksNamespaces(t *testing.T) {
+	fsys := testFS(specYAML + "  platform/core/api: {topics: [service]}\n")
+	fsys["repos/platform/core/api/README.md"] = &fstest.MapFile{Data: []byte("# api\n")}
+	fsys["repos/platform/core/api/src/main.go"] = &fstest.MapFile{Data: []byte("package main\n")}
+	fsys["repos/platform/tooling/run.sh"] = &fstest.MapFile{Data: []byte("#!/bin/sh\n")}
+	fsys["repos/payments/api/.gitkeep"] = &fstest.MapFile{}
+	fsys["repos/payments/.DS_Store"] = &fstest.MapFile{Data: []byte("junk")}
+
+	spec, err := LoadSpec(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range spec.Repos {
+		names = append(names, r.Name)
+		if r.Name == "platform/core/api" && (r.Dir != "repos/platform/core/api" || len(r.Topics) != 1) {
+			t.Errorf("platform/core/api: %+v", r)
+		}
+	}
+	want := []string{"bare", "legacy", "payments/api", "plain", "platform/core/api", "platform/tooling"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("repos: got %v, want %v", names, want)
+	}
+	if got, want := spec.Namespaces(), []string{"payments", "platform", "platform/core"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("namespaces, outermost first: got %v, want %v", got, want)
+	}
+
+	// A file makes it a repository, so the override below it no longer names one.
+	fsys["repos/platform/core/NOTES.md"] = &fstest.MapFile{Data: []byte("stray\n")}
+	if _, err := LoadSpec(fsys); err == nil || !strings.Contains(err.Error(), "no such directory") {
+		t.Errorf("want the stray file caught through the override, got %v", err)
+	}
+}
+
+func TestLoadSpecRejectsTrees(t *testing.T) {
+	for want, extra := range map[string][]string{
+		"no repository is under it": {"repos/hollow/.hidden/x"},
+		`both "a-b-c"`:              {"repos/a-b/c/README.md", "repos/a/b-c/README.md"},
+		"not a valid":               {"repos/team one/api/README.md"},
+	} {
+		fsys := testFS(specYAML)
+		for _, p := range extra {
+			fsys[p] = &fstest.MapFile{Data: []byte("x\n")}
+		}
+		if _, err := LoadSpec(fsys); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("want error containing %q, got %v", want, err)
+		}
+	}
+}

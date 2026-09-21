@@ -36,6 +36,21 @@ type Spec struct {
 	Repos   []Repo
 }
 
+// Namespaces lists every namespace the repositories sit in, ancestors included, each one
+// before what is inside it.
+func (s *Spec) Namespaces() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range s.Repos {
+		for ns := path.Dir(r.Name); ns != "." && !seen[ns]; ns = path.Dir(ns) {
+			seen[ns] = true
+			out = append(out, ns)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // GitIdentity pins the author, committer and clock used for every seeded commit, which
 // is what makes the resulting commit SHAs identical across machines and across runs.
 type GitIdentity struct {
@@ -52,6 +67,7 @@ type Author struct {
 // Repo is one declared repository. Name and Dir come from the directory tree; the
 // remaining fields come from the defaults and the optional overrides in fleet.yaml.
 type Repo struct {
+	// Name is the path under repos/: "dotfiles", or "platform/core/api" inside namespaces.
 	Name          string
 	Dir           string
 	DefaultBranch string
@@ -124,8 +140,17 @@ func LoadSpec(fsys fs.FS) (*Spec, error) {
 	}
 
 	known := map[string]bool{}
+	flat := map[string]string{}
 	for _, r := range repos {
 		known[r.Name] = true
+		// A forge without namespaces joins the path with "-". Two names that join to the same
+		// one are refused everywhere, so that a fleet never works on one forge only.
+		f := strings.ReplaceAll(r.Name, "/", "-")
+		if other, taken := flat[f]; taken {
+			return nil, fmt.Errorf("%s/: %s and %s are both %q on a forge without namespaces",
+				ReposDir, other, r.Name, f)
+		}
+		flat[f] = r.Name
 	}
 	for key := range ff.Repos {
 		if !known[key] {
@@ -157,24 +182,63 @@ func LoadSpec(fsys fs.FS) (*Spec, error) {
 	return &Spec{Version: ff.Version, Git: ff.Git, Repos: repos}, nil
 }
 
-// walkRepos finds every directory under repos/, sorted by name.
+// walkRepos finds every repository under repos/, sorted by name. The tree says which
+// directory is which: one that holds a file is a repository, and one that holds only
+// directories is a namespace, whose path becomes part of the names below it.
 func walkRepos(fsys fs.FS) ([]Repo, error) {
-	entries, err := fs.ReadDir(fsys, ReposDir)
+	out, err := walkDir(fsys, ReposDir)
 	if err != nil {
-		return nil, fmt.Errorf("read %s/: %w", ReposDir, err)
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func walkDir(fsys fs.FS, dir string) ([]Repo, error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return nil, fmt.Errorf("read %s/: %w", dir, err)
 	}
 	var out []Repo
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
+		p := path.Join(dir, e.Name())
 		if !repoName.MatchString(e.Name()) {
-			return nil, fmt.Errorf("%s/%s: not a valid repository name", ReposDir, e.Name())
+			return nil, fmt.Errorf("%s: not a valid repository name", p)
 		}
-		out = append(out, Repo{Name: e.Name(), Dir: path.Join(ReposDir, e.Name())})
+		isRepo, err := holdsFile(fsys, p)
+		if err != nil {
+			return nil, err
+		}
+		if isRepo {
+			out = append(out, Repo{Name: strings.TrimPrefix(p, ReposDir+"/"), Dir: p})
+			continue
+		}
+		nested, err := walkDir(fsys, p)
+		if err != nil {
+			return nil, err
+		}
+		if len(nested) == 0 {
+			return nil, fmt.Errorf("%s: holds no file, so it is a namespace, yet no repository is under it", p)
+		}
+		out = append(out, nested...)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+func holdsFile(fsys fs.FS, dir string) (bool, error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return false, fmt.Errorf("read %s/: %w", dir, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() && !IsOSJunk(e.Name()) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // normaliseTopics lowercases, dedupes and sorts. Never nil: a forge reports an empty list
