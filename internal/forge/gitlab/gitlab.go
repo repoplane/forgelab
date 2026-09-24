@@ -338,15 +338,30 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 		return err
 	}
 
+	// What the first delete did has to be read back: gitlab.com only schedules the removal,
+	// while an instance configured without the delay performs it outright. Only a 404 says
+	// the project is really gone. Any other error leaves the question unanswered, and
+	// answering it "gone" is what let a project sit in deletion_scheduled while destroy
+	// reported it deleted -- a whole delete silently downgraded to a rename.
 	var after struct {
 		FullPath string  `json:"path_with_namespace"`
 		Deleting *string `json:"marked_for_deletion_on"`
 	}
-	if _, err := c.do(ctx, http.MethodGet, byID, nil, &after); err != nil || after.Deleting == nil {
-		return nil // already gone: deletion was immediate
+	switch _, err := c.do(ctx, http.MethodGet, byID, nil, &after); {
+	case hasStatus(err, http.StatusNotFound):
+		return nil // removed outright
+	case err != nil:
+		return fmt.Errorf("%s: deleted, then could not be read back: %w", name, err)
+	case after.Deleting == nil:
+		return nil // not scheduled, so the first delete was the whole of it
 	}
-	_, _ = c.do(ctx, http.MethodDelete,
-		byID+"?permanently_remove=true&full_path="+url.QueryEscape(after.FullPath), nil, nil)
+
+	// Scheduled. The second call is what makes it permanent, and it has to name the path the
+	// scheduling renamed the project to, not the one it was deleted by.
+	if _, err := c.do(ctx, http.MethodDelete,
+		byID+"?permanently_remove=true&full_path="+url.QueryEscape(after.FullPath), nil, nil); err != nil {
+		return fmt.Errorf("%s: scheduled for deletion but not removed: %w", after.FullPath, err)
+	}
 	return nil
 }
 

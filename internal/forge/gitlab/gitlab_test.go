@@ -207,6 +207,99 @@ func TestDeleteIsPermanent(t *testing.T) {
 	}
 }
 
+// deleteServer answers the first GET with a live project, the DELETE with 202, and the
+// read-back with readBack. It counts deletes so a test can tell whether the permanent one
+// was attempted.
+func deleteServer(t *testing.T, readBack func(http.ResponseWriter)) (*Client, *int) {
+	t.Helper()
+	deletes := 0
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			deletes++
+			w.WriteHeader(http.StatusAccepted)
+		case deletes == 0:
+			fmt.Fprint(w, `{"id":42,"path_with_namespace":"acme-sandbox/services/svc"}`)
+		default:
+			readBack(w)
+		}
+	})
+	return c, &deletes
+}
+
+// An instance without the deletion delay removes the project outright, and the read-back
+// 404s. That is the one answer that means gone.
+func TestDeleteAcceptsAnImmediateRemoval(t *testing.T) {
+	c, deletes := deleteServer(t, func(w http.ResponseWriter) { http.NotFound(w, nil) })
+	if err := c.Delete(ctx, "svc"); err != nil {
+		t.Fatalf("a 404 read-back means the project is gone: %v", err)
+	}
+	if *deletes != 1 {
+		t.Errorf("nothing left to remove, so no second delete: %d", *deletes)
+	}
+}
+
+// A project still there but not scheduled was removed by the first call as far as GitLab is
+// concerned; there is nothing to make permanent.
+func TestDeleteAcceptsAnUnscheduledProject(t *testing.T) {
+	c, deletes := deleteServer(t, func(w http.ResponseWriter) {
+		fmt.Fprint(w, `{"id":42,"path_with_namespace":"acme-sandbox/services/svc"}`)
+	})
+	if err := c.Delete(ctx, "svc"); err != nil {
+		t.Fatal(err)
+	}
+	if *deletes != 1 {
+		t.Errorf("not scheduled, so no second delete: %d", *deletes)
+	}
+}
+
+// The regression. A read-back that fails for any other reason says nothing about whether the
+// project went, and the delete used to report success anyway -- which is how one was left
+// sitting in deletion_scheduled after destroy said it had deleted it.
+func TestDeleteRefusesToGuessFromAFailedReadBack(t *testing.T) {
+	c, deletes := deleteServer(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	err := c.Delete(ctx, "svc")
+	if err == nil {
+		t.Fatal("a read-back that failed is not evidence the project is gone")
+	}
+	if !strings.Contains(err.Error(), "could not be read back") {
+		t.Errorf("got %v", err)
+	}
+	if *deletes != 1 {
+		t.Errorf("the permanent delete cannot be attempted without the renamed path: %d", *deletes)
+	}
+}
+
+// A refused permanent delete leaves the project scheduled, which is exactly the state the
+// caller must hear about rather than a nil error.
+func TestDeleteSurfacesARefusedPermanentRemoval(t *testing.T) {
+	deletes := 0
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			deletes++
+			if deletes == 2 {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+		case deletes == 0:
+			fmt.Fprint(w, `{"id":42,"path_with_namespace":"acme-sandbox/services/svc"}`)
+		default:
+			fmt.Fprint(w, `{"id":42,"path_with_namespace":"acme-sandbox/services/svc-deleted-42","marked_for_deletion_on":"2026-09-26"}`)
+		}
+	})
+	err := c.Delete(ctx, "svc")
+	if err == nil {
+		t.Fatal("a project left scheduled must not be reported as deleted")
+	}
+	if !strings.Contains(err.Error(), "scheduled for deletion but not removed") {
+		t.Errorf("got %v", err)
+	}
+}
+
 func TestCreateAndRequests(t *testing.T) {
 	var body map[string]any
 	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
