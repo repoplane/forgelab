@@ -121,7 +121,6 @@ func TestUpdateSettingsOrder(t *testing.T) {
 	want := []string{
 		"POST " + svc + "/unarchive",
 		"PUT " + svc,
-		"DELETE " + svc + "/protected_branches/release%2F1",
 		"POST " + svc + "/protected_branches",
 		"POST " + svc + "/archive",
 	}
@@ -130,46 +129,53 @@ func TestUpdateSettingsOrder(t *testing.T) {
 	}
 }
 
-// The project's own rule is removed and replaced by one that permits force-push.
+// With no rule in the way, one create is the whole of it, and it permits a force-push.
 func TestAllowForcePush(t *testing.T) {
+	var rule map[string]any
 	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+		_ = json.NewDecoder(r.Body).Decode(&rule)
+		w.WriteHeader(http.StatusCreated)
 	})
 	if err := c.AllowForcePush(ctx, "svc", "release/1"); err != nil {
 		t.Fatal(err)
 	}
+	if want := []string{"POST " + svc + "/protected_branches"}; strings.Join(*seen, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got:\n%s\nwant:\n%s", strings.Join(*seen, "\n"), strings.Join(want, "\n"))
+	}
+	if rule["name"] != "release/1" || rule["allow_force_push"] != true {
+		t.Errorf("the rule does not permit force-push: %v", rule)
+	}
+}
+
+// The regression. GitLab protects a default branch a moment *after* the first push returns,
+// so the rule can arrive between any two requests and the create answers 409. Amending the one
+// that turned up is what converges; deleting and creating again only races the forge a second
+// time, which is how eight projects out of a hundred and eight ended up protected against the
+// force-push that reset depends on -- while verify, which knows nothing of branch protection,
+// went on reporting them green.
+func TestAllowForcePushAmendsARuleThatArrivesFirst(t *testing.T) {
+	var patched map[string]any
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `{"message":"Protected branch 'main' already exists"}`)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&patched)
+		w.WriteHeader(http.StatusOK)
+	})
+	if err := c.AllowForcePush(ctx, "svc", "main"); err != nil {
+		t.Fatalf("a rule that already exists is not a failure: %v", err)
+	}
 	want := []string{
-		"DELETE " + svc + "/protected_branches/release%2F1",
 		"POST " + svc + "/protected_branches",
+		"PATCH " + svc + "/protected_branches/main",
 	}
 	if strings.Join(*seen, "\n") != strings.Join(want, "\n") {
 		t.Errorf("got:\n%s\nwant:\n%s", strings.Join(*seen, "\n"), strings.Join(want, "\n"))
 	}
-}
-
-// Protection inherited from the group never appears as a project rule: the branch reports
-// protected while the rule list is empty, so the delete 404s and lifts nothing. The
-// replacement is what actually permits the push, which makes the 404 the case that must not
-// stop it -- one project in a 101-repository apply was protected exactly this way, and the
-// delete-only version reported success and then failed on the push.
-func TestAllowForcePushWhenProtectionIsInherited(t *testing.T) {
-	var rule map[string]any
-	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewDecoder(r.Body).Decode(&rule)
-		w.WriteHeader(http.StatusCreated)
-	})
-	if err := c.AllowForcePush(ctx, "svc", "main"); err != nil {
-		t.Fatal(err)
-	}
-	if len(*seen) != 2 || (*seen)[1] != "POST "+svc+"/protected_branches" {
-		t.Fatalf("a 404 on the delete must not skip the replacement: %v", *seen)
-	}
-	if rule["name"] != "main" || rule["allow_force_push"] != true {
-		t.Errorf("the replacement rule does not permit force-push: %v", rule)
+	if patched["allow_force_push"] != true {
+		t.Errorf("the existing rule was not amended to permit force-push: %v", patched)
 	}
 }
 

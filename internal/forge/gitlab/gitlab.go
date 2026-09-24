@@ -460,27 +460,30 @@ const maintainerAccess = 40
 // moment it is first pushed, and protected means "no force-push": without this, reset fails
 // with "You are not allowed to force push code to a protected branch".
 //
-// Deleting the project's rule is not enough on its own. Protection is also inherited from the
-// group's default_branch_protection_defaults, and that never materialises as a project rule:
-// the branch reports protected while /protected_branches answers an empty list, so the delete
-// finds nothing, reports success, and the push still fails. Replacing the rule is what works
-// -- an explicit project rule outranks the group default, and one that permits force-push
-// leaves the branch protected in every other respect, which is closer to a real repository
-// than removing protection outright.
+// What it installs is an explicit project rule that permits a force-push. That outranks the
+// group's default_branch_protection_defaults, which is the case removing a rule cannot reach:
+// inherited protection never materialises as a project rule, so the branch reports protected
+// while /protected_branches answers an empty list. It also leaves the branch protected in every
+// other respect, which is closer to a real repository than unprotecting it.
 //
-// A 404 on the delete means there was no project rule to remove, which is the inherited case
-// and precisely when the replacement matters most.
+// Both calls are here because neither alone converges. GitLab protects a default branch a
+// moment *after* the first push returns, so a rule can appear between any two requests: create
+// first and the answer may be 409, in which case the rule to amend is the one that just
+// arrived. Deleting and creating instead would only race the forge again -- which it did, on
+// eight projects out of a hundred and eight.
 func (c *Client) AllowForcePush(ctx context.Context, name, branch string) error {
-	_, err := c.do(ctx, http.MethodDelete, c.project(name)+"/protected_branches/"+url.PathEscape(branch), nil, nil)
-	if err != nil && !hasStatus(err, http.StatusNotFound) {
-		return err
-	}
-	_, err = c.do(ctx, http.MethodPost, c.project(name)+"/protected_branches", map[string]any{
+	_, err := c.do(ctx, http.MethodPost, c.project(name)+"/protected_branches", map[string]any{
 		"name":               branch,
 		"allow_force_push":   true,
 		"push_access_level":  maintainerAccess,
 		"merge_access_level": maintainerAccess,
 	}, nil)
+	if err == nil || !hasStatus(err, http.StatusConflict) {
+		return err
+	}
+	_, err = c.do(ctx, http.MethodPatch,
+		c.project(name)+"/protected_branches/"+url.PathEscape(branch),
+		map[string]any{"allow_force_push": true}, nil)
 	return err
 }
 
