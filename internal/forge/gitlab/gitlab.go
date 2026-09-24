@@ -436,18 +436,36 @@ func (c *Client) UpdateSettings(ctx context.Context, name string, s forge.Settin
 	return nil
 }
 
-// AllowForcePush removes the branch's protection rule. GitLab protects a default branch the
+// maintainerAccess is GitLab's access level 40. It is who may push and merge under the rule
+// AllowForcePush installs: the same audience the group's own default names, so the rule
+// changes only whether a force-push is allowed.
+const maintainerAccess = 40
+
+// AllowForcePush makes sure branch can be force-pushed. GitLab protects a default branch the
 // moment it is first pushed, and protected means "no force-push": without this, reset fails
 // with "You are not allowed to force push code to a protected branch".
 //
-// A 404 means there is no rule, which is the goal. It is also what GitLab answers if its own
-// rule has not been created yet, which is why callers ask again right before each force-push
-// instead of relying on the call made at apply time.
+// Deleting the project's rule is not enough on its own. Protection is also inherited from the
+// group's default_branch_protection_defaults, and that never materialises as a project rule:
+// the branch reports protected while /protected_branches answers an empty list, so the delete
+// finds nothing, reports success, and the push still fails. Replacing the rule is what works
+// -- an explicit project rule outranks the group default, and one that permits force-push
+// leaves the branch protected in every other respect, which is closer to a real repository
+// than removing protection outright.
+//
+// A 404 on the delete means there was no project rule to remove, which is the inherited case
+// and precisely when the replacement matters most.
 func (c *Client) AllowForcePush(ctx context.Context, name, branch string) error {
 	_, err := c.do(ctx, http.MethodDelete, c.project(name)+"/protected_branches/"+url.PathEscape(branch), nil, nil)
-	if hasStatus(err, http.StatusNotFound) {
-		return nil
+	if err != nil && !hasStatus(err, http.StatusNotFound) {
+		return err
 	}
+	_, err = c.do(ctx, http.MethodPost, c.project(name)+"/protected_branches", map[string]any{
+		"name":               branch,
+		"allow_force_push":   true,
+		"push_access_level":  maintainerAccess,
+		"merge_access_level": maintainerAccess,
+	}, nil)
 	return err
 }
 

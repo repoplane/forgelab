@@ -220,11 +220,13 @@ func (e *Env) applyOne(ctx context.Context, c *change) error {
 	}
 
 	if (c.create || c.push) && c.built != nil {
-		// A re-seed replaces the seed commit, which is a force-push onto an existing branch.
-		if !c.create {
-			if err := e.Forge.AllowForcePush(ctx, name, want.DefaultBranch); err != nil {
-				return fmt.Errorf("allow force-push: %w", err)
-			}
+		// Every seed is a force-push, the first one included, so the lift is unconditional:
+		// the branch this is about to write can already be protected even on a repository
+		// created moments ago, because a forge may protect a default branch the instant it
+		// names one. Skipping the call on create was trusting that nothing had happened in
+		// between, which is the assumption the interface's contract exists to refuse.
+		if err := e.Forge.AllowForcePush(ctx, name, want.DefaultBranch); err != nil {
+			return fmt.Errorf("allow force-push: %w", err)
 		}
 		url, err := e.Forge.GitURL(name)
 		if err != nil {
