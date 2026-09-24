@@ -144,13 +144,14 @@ func LoadSpec(fsys fs.FS) (*Spec, error) {
 	for _, r := range repos {
 		known[r.Name] = true
 		// A forge without namespaces joins the path with "-". Two names that join to the same
-		// one are refused everywhere, so that a fleet never works on one forge only.
+		// one are refused everywhere, so that a fleet never works on one forge only. Forges
+		// match names ignoring case, so Api and api are the same one too.
 		f := strings.ReplaceAll(r.Name, "/", "-")
-		if other, taken := flat[f]; taken {
+		if other, taken := flat[strings.ToLower(f)]; taken {
 			return nil, fmt.Errorf("%s/: %s and %s are both %q on a forge without namespaces",
 				ReposDir, other, r.Name, f)
 		}
-		flat[f] = r.Name
+		flat[strings.ToLower(f)] = r.Name
 	}
 	for key := range ff.Repos {
 		if !known[key] {
