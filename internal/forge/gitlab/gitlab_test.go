@@ -122,6 +122,7 @@ func TestUpdateSettingsOrder(t *testing.T) {
 		"POST " + svc + "/unarchive",
 		"PUT " + svc,
 		"DELETE " + svc + "/protected_branches/release%2F1",
+		"POST " + svc + "/protected_branches",
 		"POST " + svc + "/archive",
 	}
 	if strings.Join(*seen, "\n") != strings.Join(want, "\n") {
@@ -129,21 +130,53 @@ func TestUpdateSettingsOrder(t *testing.T) {
 	}
 }
 
+// The project's own rule is removed and replaced by one that permits force-push.
 func TestAllowForcePush(t *testing.T) {
-	status := http.StatusNoContent
-	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) })
-
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	if err := c.AllowForcePush(ctx, "svc", "release/1"); err != nil {
 		t.Fatal(err)
 	}
-	if (*seen)[0] != "DELETE "+svc+"/protected_branches/release%2F1" {
-		t.Errorf("got %s", (*seen)[0])
+	want := []string{
+		"DELETE " + svc + "/protected_branches/release%2F1",
+		"POST " + svc + "/protected_branches",
 	}
-	status = http.StatusNotFound // no rule: already force-pushable
+	if strings.Join(*seen, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got:\n%s\nwant:\n%s", strings.Join(*seen, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Protection inherited from the group never appears as a project rule: the branch reports
+// protected while the rule list is empty, so the delete 404s and lifts nothing. The
+// replacement is what actually permits the push, which makes the 404 the case that must not
+// stop it -- one project in a 101-repository apply was protected exactly this way, and the
+// delete-only version reported success and then failed on the push.
+func TestAllowForcePushWhenProtectionIsInherited(t *testing.T) {
+	var rule map[string]any
+	c, seen := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&rule)
+		w.WriteHeader(http.StatusCreated)
+	})
 	if err := c.AllowForcePush(ctx, "svc", "main"); err != nil {
-		t.Errorf("a missing rule is not an error: %v", err)
+		t.Fatal(err)
 	}
-	status = http.StatusForbidden
+	if len(*seen) != 2 || (*seen)[1] != "POST "+svc+"/protected_branches" {
+		t.Fatalf("a 404 on the delete must not skip the replacement: %v", *seen)
+	}
+	if rule["name"] != "main" || rule["allow_force_push"] != true {
+		t.Errorf("the replacement rule does not permit force-push: %v", rule)
+	}
+}
+
+func TestAllowForcePushRefused(t *testing.T) {
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
 	if err := c.AllowForcePush(ctx, "svc", "main"); err == nil {
 		t.Error("a refused unprotect must surface")
 	}
