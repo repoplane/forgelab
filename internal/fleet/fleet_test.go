@@ -123,6 +123,7 @@ func TestLoadSpecRejectsTrees(t *testing.T) {
 	for want, extra := range map[string][]string{
 		"no repository is under it": {"repos/hollow/.hidden/x"},
 		`both "a-b-c"`:              {"repos/a-b/c/README.md", "repos/a/b-c/README.md"},
+		`both "x-y-z"`:              {"repos/X-y/z/README.md", "repos/x/y-z/README.md"},
 		"not a valid":               {"repos/team one/api/README.md"},
 	} {
 		fsys := testFS(specYAML)
