@@ -212,36 +212,64 @@ func (e *Env) compareOne(ctx context.Context, s *state) error {
 	return nil
 }
 
+// readyPerRepo is how long one repository has to reflect its push. It is spent per
+// repository and not per fleet: how slow one repository was says nothing about the next,
+// and a budget shared across the fleet fails whichever repository happens to be holding it
+// when the time runs out -- naming that repository in the error, though it may have been
+// answering perfectly.
+const readyPerRepo = 60 * time.Second
+
+// readyOverall stops a fleet from waiting on a forge that is not coming back. A per-repository
+// bound multiplies: at eight workers, a hundred repositories against a dead forge would
+// otherwise sit for the better part of a quarter of an hour.
+const readyOverall = 10 * time.Minute
+
+// branchLister is the only thing the wait asks of a forge. It is named here so the wait can
+// be tested without standing up everything else a forge does.
+type branchLister interface {
+	Branches(ctx context.Context, name string) ([]forge.Ref, error)
+}
+
 // waitReady blocks until each repository reports its default branch at the baseline.
 //
 // Health is not readiness: a push returns before the forge has finished reflecting it, and
 // for a short window afterwards a branch listing answers 200 with a null body -- not an
 // error, just silently empty. Read naively that is "this repository has no branches".
 func (e *Env) waitReady(ctx context.Context, repos []fleet.LockRepo) error {
-	deadline := time.Now().Add(60 * time.Second)
+	overall := time.Now().Add(readyOverall)
 	return forEach(ctx, repos, func(ctx context.Context, want fleet.LockRepo) error {
 		if want.Empty || (want.Archived && e.Forge.Caps().ArchivedUnreadable) {
 			return nil
 		}
-		// Quick first looks for a local forge, backing off to a second for a hosted one.
-		for pause := 25 * time.Millisecond; ; pause = min(pause*2, time.Second) {
-			branches, err := e.Forge.Branches(ctx, want.Name)
-			if err == nil && slices.Contains(branches, forge.Ref{Name: want.DefaultBranch, SHA: want.Baseline}) {
-				return nil
-			}
-			if time.Now().After(deadline) {
-				if err != nil {
-					return fmt.Errorf("%s not ready: %w", want.Name, err)
-				}
-				return fmt.Errorf("%s never reported %s at %s", want.Name, want.DefaultBranch, short(want.Baseline))
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(pause):
-			}
-		}
+		return waitOne(ctx, e.Forge, want, readyPerRepo, overall)
 	})
+}
+
+// waitOne blocks until want reports its baseline. It gives up on its own clock, or on the
+// fleet's, and says which -- the two are different failures and want different answers.
+func waitOne(ctx context.Context, f branchLister, want fleet.LockRepo, perRepo time.Duration, overall time.Time) error {
+	deadline := time.Now().Add(perRepo)
+	// Quick first looks for a local forge, backing off to a second for a hosted one.
+	for pause := 25 * time.Millisecond; ; pause = min(pause*2, time.Second) {
+		branches, err := f.Branches(ctx, want.Name)
+		if err == nil && slices.Contains(branches, forge.Ref{Name: want.DefaultBranch, SHA: want.Baseline}) {
+			return nil
+		}
+		switch now := time.Now(); {
+		case now.After(overall):
+			return fmt.Errorf("gave up on the fleet after %s, waiting for %s", readyOverall, want.Name)
+		case now.After(deadline):
+			if err != nil {
+				return fmt.Errorf("%s not ready: %w", want.Name, err)
+			}
+			return fmt.Errorf("%s never reported %s at %s", want.Name, want.DefaultBranch, short(want.Baseline))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pause):
+		}
+	}
 }
 
 func sortedKeys(m map[string]string) []string {
