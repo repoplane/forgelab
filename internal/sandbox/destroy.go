@@ -58,19 +58,7 @@ func (e *Env) Destroy(ctx context.Context) error {
 			e.printf("  ! %-28s left alone: %s\n", t.name, t.skip)
 		}
 	}
-	// The namespaces this forge holds as such, rather than as a prefix of the name.
-	var namespaces []string
-	if depth := e.Forge.Caps().NamespaceDepth; depth != 0 {
-		for _, ns := range spec.Namespaces() {
-			if depth == forge.AnyDepth || strings.Count(ns, "/") < depth {
-				namespaces = append(namespaces, ns)
-			}
-		}
-	}
-	// Where a forge makes the home of the repositories without a namespace, that goes last.
-	if e.Sandbox.DefaultProject != "" {
-		namespaces = append(namespaces, "")
-	}
+	namespaces := doomedNamespaces(spec, e.Forge.Caps().NamespaceDepth, e.Sandbox.DefaultProject)
 	label := func(ns string) string {
 		if ns == "" {
 			return e.Sandbox.DefaultProject + "/"
@@ -130,4 +118,29 @@ func (e *Env) Destroy(ctx context.Context) error {
 		e.printf("ok: %d repositories deleted, %d namespaces removed\n", len(doomed), removed)
 	}
 	return nil
+}
+
+// doomedNamespaces is what destroy removes besides the repositories themselves, outermost first:
+// the namespaces this forge holds as things of their own rather than as a prefix of a name, and
+// then the home it gives the repositories that have no namespace.
+//
+// That last one is included only if this fleet actually put a repository there. A fleet whose
+// repositories are all namespaced never used that home, and on Azure DevOps the home is a project
+// forgelab made for some other fleet -- marked as its own, and so removed "with all it holds" on
+// the word of a fleet that never touched it.
+func doomedNamespaces(spec *fleet.Spec, depth int, defaultProject string) []string {
+	var out []string
+	if depth != 0 {
+		for _, ns := range spec.Namespaces() {
+			if depth == forge.AnyDepth || strings.Count(ns, "/") < depth {
+				out = append(out, ns)
+			}
+		}
+	}
+	if defaultProject != "" && slices.ContainsFunc(spec.Repos, func(r fleet.Repo) bool {
+		return !strings.Contains(r.Name, "/")
+	}) {
+		out = append(out, "")
+	}
+	return out
 }
