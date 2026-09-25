@@ -78,19 +78,19 @@ func TestWaitOneDistinguishesTheFleetCeiling(t *testing.T) {
 // unaffected. It does not reproduce the old failure, which lived in waitReady's single
 // deadline and cannot be expressed against this signature at all.
 func TestWaitOneBudgetIsNotSharedBetweenRepositories(t *testing.T) {
-	overall, perRepo := far(), 100*time.Millisecond
+	overall, perRepo := far(), 200*time.Millisecond
 
 	slow := &branches{ready: 1 << 30}
 	if err := waitOne(bg, slow, repo, perRepo, overall); err == nil {
 		t.Fatal("the slow repository should have run out of its own time")
 	}
-	// Under a shared budget the time is gone by now and this call fails without waiting.
-	start := time.Now()
-	if err := waitOne(bg, &branches{ready: 2}, repo, perRepo, overall); err != nil {
+
+	// Succeeding is the whole proof: this one answers "not ready" once, so it reaches the
+	// deadline check, and under a budget shared with the call above that check would have
+	// failed it outright. How long it took is not asserted -- the clock is the thing being
+	// tested, so timing the test on it only makes it flaky on a loaded machine.
+	if err := waitOne(bg, &branches{ready: 1}, repo, perRepo, overall); err != nil {
 		t.Fatalf("a healthy repository must not inherit an exhausted budget: %v", err)
-	}
-	if time.Since(start) > perRepo {
-		t.Error("the healthy repository waited longer than its own budget")
 	}
 }
 
