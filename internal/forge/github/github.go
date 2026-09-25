@@ -128,7 +128,7 @@ func (c *Client) do(ctx context.Context, method, target string, body, out any) (
 		payload, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		if wait, limited := rateLimited(resp); limited {
+		if wait, limited := rateLimited(resp, payload); limited {
 			if attempt >= 4 || wait > maxRateLimitWait {
 				return nil, fmt.Errorf("%s %s: rate limited by GitHub; retry in %s", method, pathOf(target), wait.Round(time.Second))
 			}
@@ -148,10 +148,22 @@ func (c *Client) do(ctx context.Context, method, target string, body, out any) (
 	}
 }
 
-// rateLimited recognises both limits. The secondary one answers 403 or 429 with
-// Retry-After; an exhausted primary one answers 403 with X-RateLimit-Remaining: 0 and the
-// reset time. A plain 403 (no permission) is neither, and is not retried.
-func rateLimited(resp *http.Response) (time.Duration, bool) {
+// secondaryLimit is what GitHub calls a secondary limit, in the one place it always says so.
+// The headers cannot be relied on for it: there is often no Retry-After, and
+// X-RateLimit-Remaining reports what is left of the *primary* budget, which a secondary limit
+// leaves untouched -- 4264 of 5000 on the one that stopped a fleet part-way through an apply.
+var secondaryLimit = []byte("secondary rate limit")
+
+// secondaryWait is the pause before trying again when only the body said so. GitHub asks for
+// at least a minute, and the retry loop repeats it, so a block that outlasts one pause is
+// still waited out rather than reported.
+const secondaryWait = time.Minute
+
+// rateLimited recognises both limits. A secondary one answers 403 or 429, sometimes with
+// Retry-After and otherwise saying so only in the body; an exhausted primary one answers 403
+// with X-RateLimit-Remaining: 0 and the reset time. A plain 403 (no permission) is neither,
+// and is not retried.
+func rateLimited(resp *http.Response, payload []byte) (time.Duration, bool) {
 	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
 		return 0, false
 	}
@@ -162,6 +174,9 @@ func rateLimited(resp *http.Response) (time.Duration, bool) {
 		if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
 			return max(time.Until(time.Unix(reset, 0)), time.Second), true
 		}
+	}
+	if bytes.Contains(bytes.ToLower(payload), secondaryLimit) {
+		return secondaryWait, true
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return time.Minute, true

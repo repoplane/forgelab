@@ -129,6 +129,28 @@ func TestRateLimits(t *testing.T) {
 		}
 	})
 
+	// The regression, and the shape the headers cannot describe. A secondary limit often
+	// arrives with no Retry-After, and X-RateLimit-Remaining reports the *primary* budget,
+	// which it leaves untouched -- so by the headers alone this is indistinguishable from
+	// having no permission. Only the body says what it is. Reading it as a refusal is what
+	// stopped an apply 27 repositories into a fleet of 108.
+	t.Run("a secondary limit with nothing but a body is still waited out", func(t *testing.T) {
+		calls := 0
+		c, slept := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			if calls++; calls == 1 {
+				w.Header().Set("X-RateLimit-Remaining", "4264") // not zero: the hourly budget is fine
+				http.Error(w, `{"message":"You have exceeded a secondary rate limit and have been `+
+					`temporarily blocked from content creation."}`, http.StatusForbidden)
+			}
+		})
+		if err := c.SetTopics(ctx, "svc", nil); err != nil {
+			t.Fatalf("a secondary limit is a pause, not a refusal: %v", err)
+		}
+		if calls != 2 || len(*slept) != 1 || (*slept)[0] != time.Minute {
+			t.Errorf("calls=%d slept=%v, want one minute-long sleep and a retry", calls, *slept)
+		}
+	})
+
 	t.Run("a plain 403 is not retried", func(t *testing.T) {
 		calls := 0
 		c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
