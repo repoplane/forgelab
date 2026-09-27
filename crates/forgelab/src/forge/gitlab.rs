@@ -62,6 +62,17 @@ struct GroupInfo {
 
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// GitLab's "Project could not be updated!": a 422, or a 400 carrying that message.
+fn is_busy(e: &ForgeError) -> bool {
+    match e {
+        ForgeError::Status { status: 422, .. } => true,
+        ForgeError::Status {
+            status: 400, body, ..
+        } => body.contains("could not be updated"),
+        _ => false,
+    }
+}
+
 impl Client {
     /// `base_url` is the web address, e.g. https://gitlab.com.
     pub fn new(
@@ -346,13 +357,25 @@ impl Client {
     /// projects at a time -- with a bare 422 "Project could not be updated!" that succeeds
     /// when simply tried again, so it is, a few times.
     async fn update(&self, name: &str, fields: serde_json::Value) -> Result<(), ForgeError> {
+        let path = self.project(name);
+        self.busy_retried(|| self.call(Method::PUT, &path, Some(&fields)))
+            .await
+            .map(drop)
+    }
+
+    /// Tries a request again, a few times, when GitLab answers "Project could not be
+    /// updated!": a bare refusal that a burst of changes provokes and a second try cures. It
+    /// comes as a 422 on an update, and as a 400 on a delete -- one of a hundred and eight
+    /// deletions, four at a time, in a real destroy of the scale fleet.
+    async fn busy_retried<T, F, Fut>(&self, send: F) -> Result<T, ForgeError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, ForgeError>>,
+    {
         let mut last = None;
         for attempt in 1..=4u64 {
-            match self
-                .call(Method::PUT, &self.project(name), Some(&fields))
-                .await
-            {
-                Err(e) if e.is_status(&[422]) => {
+            match send().await {
+                Err(e) if is_busy(&e) => {
                     last = Some(e);
                     if attempt < 4 {
                         tokio::select! {
@@ -546,7 +569,10 @@ impl Forge for Client {
             Err(e) => return Err(e),
         };
         let by_id = format!("/projects/{}", before.id);
-        match self.call(Method::DELETE, &by_id, None).await {
+        match self
+            .busy_retried(|| self.call(Method::DELETE, &by_id, None))
+            .await
+        {
             Err(e) if e.is_not_found() => return Ok(()),
             other => other?,
         }
@@ -1274,6 +1300,41 @@ mod tests {
             started.elapsed(),
             Duration::from_secs(1 + 2 + 3),
             "three pauses between four attempts, none after the last"
+        );
+    }
+
+    /// A delete refused with a 400 "Project could not be updated!" is tried again, as seen in a
+    /// real destroy of the scale fleet; a 400 saying anything else is not.
+    #[tokio::test(start_paused = true)]
+    async fn delete_retries_a_busy_refusal() {
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let d2 = deletes.clone();
+        let (c, _) = serve(Box::new(move |r| match r.method().as_str() {
+            "GET" if d2.load(Ordering::SeqCst) < 2 => reply(
+                200,
+                r#"{"id":7,"path_with_namespace":"acme-sandbox/services/svc"}"#,
+            ),
+            "GET" => reply(404, ""),
+            "DELETE" if d2.fetch_add(1, Ordering::SeqCst) == 0 => {
+                reply(400, r#"{"message":"Project could not be updated!"}"#)
+            }
+            "DELETE" => reply(202, ""),
+            m => panic!("unexpected {m}"),
+        }));
+        c.delete("svc").await.unwrap();
+        assert_eq!(deletes.load(Ordering::SeqCst), 2);
+
+        let (c, t) = serve(Box::new(|r| match r.method().as_str() {
+            "GET" => reply(
+                200,
+                r#"{"id":7,"path_with_namespace":"acme-sandbox/services/svc"}"#,
+            ),
+            _ => reply(400, r#"{"message":"bad request"}"#),
+        }));
+        assert!(c.delete("svc").await.unwrap_err().is_status(&[400]));
+        assert_eq!(
+            t.seen().iter().filter(|s| s.starts_with("DELETE")).count(),
+            1
         );
     }
 
