@@ -137,6 +137,20 @@ static CONTAINER_ID: OnceLock<String> = OnceLock::new();
 
 extern "C" fn remove_container() {
     if let Some(id) = CONTAINER_ID.get() {
+        // The forge's own log goes to target/forgejo-e2e.log first: when a push goes missing,
+        // that is where Forgejo says why.
+        let log = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/forgejo-e2e.log");
+        if let Ok(file) = std::fs::File::create(&log) {
+            let _ = std::process::Command::new("docker")
+                .args(["logs", id])
+                .stdout(
+                    file.try_clone()
+                        .map(std::process::Stdio::from)
+                        .unwrap_or(std::process::Stdio::null()),
+                )
+                .stderr(std::process::Stdio::from(file))
+                .status();
+        }
         let _ = std::process::Command::new("docker")
             .args(["rm", "-f", "-v", id])
             .stdout(std::process::Stdio::null())

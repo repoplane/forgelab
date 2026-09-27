@@ -240,7 +240,11 @@ impl Answer {
         method: &Method,
         path: &str,
     ) -> Result<Option<T>, ForgeError> {
-        if self.body.is_empty() {
+        // A body of `null` is no answer, as an empty one is. Forgejo answers a branch listing
+        // with `null` for a while after a push -- not an error, just not caught up -- and the
+        // readiness wait has to see that as "no branches yet", as the Go client did, not as a
+        // response that fails to decode.
+        if self.body.is_empty() || self.body.trim_ascii() == b"null" {
             return Ok(None);
         }
         serde_json::from_slice(&self.body)
@@ -585,6 +589,22 @@ mod tests {
             .unwrap_err();
         assert!(err.is_status(&[503]), "{err}");
         assert_eq!(t.seen().len(), 1, "a POST is not repeated on a 5xx");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_null_body_is_no_answer() {
+        let t = ScriptedTransport::new(|_| ScriptedTransport::reply(200, "null"));
+        let c = client(t, super::super::classify::generic);
+        let (_, v): (_, Option<Vec<String>>) = c
+            .json(
+                Method::GET,
+                "http://x/branches",
+                None::<&()>,
+                RequestOpts::default(),
+            )
+            .await
+            .unwrap();
+        assert!(v.is_none());
     }
 
     #[tokio::test(start_paused = true)]

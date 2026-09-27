@@ -41,9 +41,12 @@ lint:
 unit:
 	cargo test --workspace
 
+# One test at a time: the tests share one Forgejo, and its SQLite loses a pushed branch to
+# "database is locked" when several tests push eight repositories each at once -- after which
+# the branch never appears in the API. The Go suite ran them one at a time for the same reason.
 ## Run every test, including the end-to-end suite against a throwaway Forgejo (needs Docker)
 test: unit
-	FORGELAB_E2E=1 cargo test -p forgelab --test e2e
+	FORGELAB_E2E=1 cargo test -p forgelab --test e2e -- --test-threads=1
 
 ## Run the 108-repository scale fleet through the fault layer (needs Docker and ../fleets)
 scale:
