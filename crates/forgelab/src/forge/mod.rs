@@ -204,6 +204,19 @@ pub trait Forge: Send + Sync {
     fn git_remote(&self, name: &str) -> Result<GitRemote, ForgeError>;
 }
 
+/// Reads a JSON `null` as the type's default. `#[serde(default)]` covers a missing field
+/// only, and forges send `null` where a string or a list is empty: GitLab for a group being
+/// deleted, which is what stopped a real destroy of the scale fleet. Every defaulted string and
+/// list field in the clients goes through this.
+pub(crate) fn null_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de> + Default,
+{
+    use serde::Deserialize as _;
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 /// Splits "platform/core/api" into its namespace and leaf: ("platform/core", "api"). A name
 /// without a namespace has "" for one.
 pub fn split_namespace(name: &str) -> (&str, &str) {

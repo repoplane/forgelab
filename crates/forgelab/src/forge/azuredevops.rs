@@ -57,11 +57,15 @@ struct ProjectInfo {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct Repository {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     name: String,
-    #[serde(default, rename = "defaultBranch")]
+    #[serde(
+        default,
+        rename = "defaultBranch",
+        deserialize_with = "super::null_default"
+    )]
     default_branch: String,
     #[serde(default, rename = "isDisabled")]
     is_disabled: bool,
@@ -72,27 +76,39 @@ struct Repository {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct Operation {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     status: String,
-    #[serde(default, rename = "resultMessage")]
+    #[serde(
+        default,
+        rename = "resultMessage",
+        deserialize_with = "super::null_default"
+    )]
     result_message: String,
-    #[serde(default, rename = "detailedMessage")]
+    #[serde(
+        default,
+        rename = "detailedMessage",
+        deserialize_with = "super::null_default"
+    )]
     detailed_message: String,
 }
 
 #[derive(Deserialize)]
 struct Values<T> {
-    #[serde(default = "Vec::new")]
+    #[serde(
+        default = "Vec::new",
+        bound(deserialize = "T: Deserialize<'de>"),
+        deserialize_with = "super::null_default"
+    )]
     value: Vec<T>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct RawRef {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     name: String,
-    #[serde(default, rename = "objectId")]
+    #[serde(default, rename = "objectId", deserialize_with = "super::null_default")]
     object_id: String,
 }
 
@@ -236,7 +252,7 @@ impl Client {
     async fn fetch_project_id(&self, project: &str) -> Result<Option<String>, ForgeError> {
         #[derive(Deserialize)]
         struct P {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             id: String,
         }
         match self
@@ -329,7 +345,7 @@ impl Client {
     async fn create_project(&self, project: &str) -> Result<(), ForgeError> {
         #[derive(Deserialize)]
         struct Process {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             id: String,
             #[serde(default, rename = "isDefault")]
             is_default: bool,
@@ -533,7 +549,11 @@ impl Client {
         struct Update {
             #[serde(default)]
             success: bool,
-            #[serde(default, rename = "updateStatus")]
+            #[serde(
+                default,
+                rename = "updateStatus",
+                deserialize_with = "super::null_default"
+            )]
             update_status: String,
         }
         let body = serde_json::json!([{ "name": full, "oldObjectId": r.object_id, "newObjectId": ZERO_SHA }]);
@@ -746,9 +766,9 @@ impl Forge for Client {
         };
         #[derive(Deserialize, Default)]
         struct P {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             id: String,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             description: String,
         }
         let p: P = match self
@@ -851,7 +871,7 @@ impl Forge for Client {
         struct Pull {
             #[serde(rename = "pullRequestId")]
             id: i64,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             title: String,
         }
         let (project, name) = self.split(name)?;

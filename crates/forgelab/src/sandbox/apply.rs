@@ -329,7 +329,7 @@ impl Env {
                 .await
                 .map_err(|e| CommandError::Other(format!("allow force-push: {e}")))?;
             let remote = self.git_remote(name)?;
-            b.push(&remote).await?;
+            self.push_seed(b, &remote, name, c.create).await?;
         }
 
         // Archived goes last, on its own: once set, nothing else can be.
@@ -371,6 +371,42 @@ impl Env {
                 .map_err(|e| CommandError::Other(format!("archive: {e}")))?;
         }
         Ok(())
+    }
+
+    /// Pushes the seed. A repository created a moment ago can be known to the forge's API and
+    /// not yet to its git endpoint: GitLab answered "project not found" to the push of one of
+    /// 108 new projects in a real apply, after its API had already answered for it. So for a
+    /// repository this apply just created, and only then, a "not found" from git is waited
+    /// out, up to 90s. Anywhere else a missing repository is a real answer.
+    async fn push_seed(
+        &self,
+        b: &Built,
+        remote: &crate::forge::GitRemote,
+        name: &str,
+        just_created: bool,
+    ) -> Result<(), CommandError> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+        let mut pause = std::time::Duration::from_secs(1);
+        loop {
+            match b.push(remote).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let msg = e.to_string();
+                    let not_found = msg.contains("could not be found") || msg.contains("not found");
+                    if !(just_created && not_found)
+                        || tokio::time::Instant::now() + pause >= deadline
+                    {
+                        return Err(e.into());
+                    }
+                    tracing::debug!(name, "created, git does not know it yet; pushing again");
+                    tokio::select! {
+                        _ = tokio::time::sleep(pause) => {}
+                        _ = self.cancel.cancelled() => return Err(CommandError::Other("interrupted".into())),
+                    }
+                    pause = (pause * 2).min(std::time::Duration::from_secs(10));
+                }
+            }
+        }
     }
 
     /// Waits until a repository just created answers. GitLab has answered a create with

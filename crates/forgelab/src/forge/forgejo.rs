@@ -135,9 +135,9 @@ impl Client {
 
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct BranchProtection {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     rule_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     branch_name: String,
     #[serde(default)]
     enable_push: bool,
@@ -236,9 +236,9 @@ impl Forge for Client {
     async fn get(&self, name: &str) -> Result<Option<Repo>, ForgeError> {
         #[derive(Deserialize)]
         struct Raw {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             name: String,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             default_branch: String,
             #[serde(default)]
             private: bool,
@@ -259,7 +259,7 @@ impl Forge for Client {
         }
         #[derive(Deserialize)]
         struct Topics {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             topics: Vec<String>,
         }
         // A forge may answer the repository from a cache for a moment after it was deleted;
@@ -438,7 +438,7 @@ impl Forge for Client {
         #[derive(Deserialize, serde::Serialize)]
         struct Pull {
             number: i64,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             title: String,
         }
         let items: Vec<Pull> = self

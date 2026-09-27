@@ -50,11 +50,11 @@ pub struct Client {
 struct GroupInfo {
     #[serde(default)]
     id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     full_path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     visibility: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     description: String,
     #[serde(default, rename = "marked_for_deletion_on")]
     deleting: Option<String>,
@@ -423,7 +423,11 @@ impl Client {
 struct ProjectRead {
     #[serde(default)]
     id: i64,
-    #[serde(default, rename = "path_with_namespace")]
+    #[serde(
+        default,
+        rename = "path_with_namespace",
+        deserialize_with = "super::null_default"
+    )]
     full_path: String,
     #[serde(default, rename = "marked_for_deletion_on")]
     deleting: Option<String>,
@@ -460,17 +464,21 @@ impl Forge for Client {
     async fn get(&self, name: &str) -> Result<Option<Repo>, ForgeError> {
         #[derive(Deserialize, Default)]
         struct Raw {
-            #[serde(default, rename = "path_with_namespace")]
+            #[serde(
+                default,
+                rename = "path_with_namespace",
+                deserialize_with = "super::null_default"
+            )]
             full_path: String,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             default_branch: String,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             visibility: String,
             #[serde(default)]
             archived: bool,
             #[serde(default)]
             empty_repo: bool,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             topics: Vec<String>,
             #[serde(default, rename = "marked_for_deletion_on")]
             deleting: Option<String>,
@@ -765,7 +773,7 @@ impl Forge for Client {
         #[derive(Deserialize)]
         struct Mr {
             iid: i64,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             title: String,
         }
         let items: Vec<Mr> = self
@@ -1301,6 +1309,20 @@ mod tests {
             Duration::from_secs(1 + 2 + 3),
             "three pauses between four attempts, none after the last"
         );
+    }
+
+    /// GitLab sends `null` for an empty field -- a group being deleted had one -- and that is
+    /// read as empty, not as a response that fails to decode.
+    #[test]
+    fn nulls_read_as_empty() {
+        let g: GroupInfo = serde_json::from_str(
+            r#"{"id":1,"full_path":"acme-sandbox/acme","visibility":"public","description":null,"marked_for_deletion_on":null}"#,
+        )
+        .unwrap();
+        assert_eq!((g.id, g.description.as_str(), g.deleting), (1, "", None));
+        let g: GroupInfo =
+            serde_json::from_str(r#"{"id":2,"full_path":null,"visibility":null}"#).unwrap();
+        assert_eq!((g.full_path.as_str(), g.visibility.as_str()), ("", ""));
     }
 
     /// A delete refused with a 400 "Project could not be updated!" is tried again, as seen in a

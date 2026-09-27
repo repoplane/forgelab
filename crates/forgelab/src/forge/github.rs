@@ -241,17 +241,17 @@ struct Enabled {
 struct StatusChecks {
     #[serde(default)]
     strict: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     contexts: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
 struct Restrictions {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     users: Vec<Login>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     teams: Vec<Slug>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     apps: Vec<Slug>,
 }
 
@@ -269,9 +269,9 @@ struct Slug {
 struct Rule {
     #[serde(rename = "type")]
     kind: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     ruleset_source_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::null_default")]
     ruleset_source: String,
     #[serde(default)]
     ruleset_id: Option<i64>,
@@ -321,15 +321,15 @@ impl Forge for Client {
     async fn get(&self, name: &str) -> Result<Option<Repo>, ForgeError> {
         #[derive(Deserialize)]
         struct Raw {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             name: String,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             default_branch: String,
             #[serde(default)]
             private: bool,
             #[serde(default)]
             archived: bool,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             topics: Vec<String>,
         }
         let raw: Raw = match self.json(Method::GET, &self.repo_path(name), None).await {
@@ -550,7 +550,7 @@ impl Forge for Client {
         #[derive(Deserialize)]
         struct Pull {
             number: i64,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "super::null_default")]
             title: String,
         }
         let items: Vec<Pull> = self
