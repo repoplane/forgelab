@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "fleet_digest": "sha256:f98892ed1bcbc67ce764531a0dd6a6c24e4a03e45e03f0916fc159d7298e5ce6",
+  "repos": [
+    {
+      "name": "archived",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "retired"
+      ],
+      "archived": true,
+      "empty": false,
+      "baseline": "6a81c541ddbc698923efa49704968247b69dfb2e"
+    },
+    {
+      "name": "billing-api",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "node",
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "b8a1a303d868e0bc2ed18bc8a39aaeb6fe8c5147"
+    },
+    {
+      "name": "compliant",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "bb39569c2c7ba8a3a244a5926ac35a5fa3b81156"
+    },
+    {
+      "name": "dotfiles",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "ccce04d5b16251b9843b2364b16328ecb8a6dabc"
+    },
+    {
+      "name": "ledger-worker",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "rust",
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "f58e220025ad921bdf36c0ee15582bf99a66d5f4"
+    },
+    {
+      "name": "master-branch",
+      "default_branch": "master",
+      "visibility": "private",
+      "topics": [
+        "legacy"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "841526d4bd7346b1eab08f010dd62ff154234504"
+    },
+    {
+      "name": "no-commits",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": true,
+      "baseline": ""
+    },
+    {
+      "name": "node-gateway",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "gateway",
+        "node",
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "55531259205d9d3bc2fe7307d4f00ef604b81f62"
+    },
+    {
+      "name": "parser-svc",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "70db57b72fefb2a8fa929a63c5529d91f2f5797c"
+    },
+    {
+      "name": "platform/core/api",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "platform",
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "62e36cb7e980433747c67f06e58ab5d58a50ba8f"
+    },
+    {
+      "name": "platform/tooling",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "50888a39c54ab8007345cdfd96c3a6688ba7d71f"
+    },
+    {
+      "name": "public",
+      "default_branch": "main",
+      "visibility": "public",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "3fd9e04da20d6916e0a23bd2741a53950f66af81"
+    },
+    {
+      "name": "scaffold",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [],
+      "archived": false,
+      "empty": false,
+      "baseline": "bbb40bd73d1de8c5995192cb7f973a0ddf7217d8"
+    },
+    {
+      "name": "services/api",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "service"
+      ],
+      "archived": false,
+      "empty": false,
+      "baseline": "9c448efac08253da79fb263049fccc8518f175fe"
+    },
+    {
+      "name": "tagged",
+      "default_branch": "main",
+      "visibility": "private",
+      "topics": [
+        "template"
+      ],
+      "archived": false,
+      "empty": false,
+      "tags": [
+        "v1",
+        "v2"
+      ],
+      "baseline": "a49bb7b288aec3c585df4766ae751fdbdcfaf0eb"
+    }
+  ]
+}

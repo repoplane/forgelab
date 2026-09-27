@@ -1,0 +1,23 @@
+[package]
+name = "forgelab-faultproxy"
+description = "Fault-injecting HTTP layer for testing forgelab against a local forge."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "forgelab-faultproxy"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+http.workspace = true

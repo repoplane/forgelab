@@ -1,0 +1,35 @@
+version: 1
+
+sandboxes:
+  local:
+    forge: forgejo
+    base_url: http://localhost:3000
+    org: forgelab-sandbox
+    token_env: FORGELAB_LOCAL_TOKEN       # the NAME of a variable; `make up` prints the export
+
+  # A GitHub sandbox. Uncomment and point it at an org that holds nothing else, with a token
+  # that can reach only that org. base_url is only needed for Enterprise Server.
+  #
+  # gh:
+  #   forge: github
+  #   org: forgelab-sandbox
+  #   token_env: FORGELAB_GH_TOKEN          # see the README for the token to create
+
+  # A GitLab sandbox: `org` is a group's full path, and may be nested.
+  #
+  # gl:
+  #   forge: gitlab
+  #   org: forgelab-sandbox
+  #   token_env: FORGELAB_GL_TOKEN
+
+  # An Azure DevOps sandbox is an organisation. Repositories without a namespace go to its
+  # default project; a namespace's first directory is a project of its own. forgelab makes and
+  # removes them all. Topics,
+  # visibility and the marker guard do not exist there, so use an organisation that holds
+  # nothing else.
+  #
+  # ado:
+  #   forge: azuredevops
+  #   org: forgelab-sandbox
+  #   default_project: fleet
+  #   token_env: FORGELAB_ADO_TOKEN
