@@ -9,6 +9,7 @@ pub mod fleet;
 pub mod forge;
 pub mod sandbox;
 pub mod seed;
+pub mod util;
 
 /// The version stamped by the release build (`FORGELAB_VERSION=v1.2.3 make build`), else the
 /// crate version.
