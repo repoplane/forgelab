@@ -86,6 +86,11 @@ fn fleets_dir() -> Option<PathBuf> {
 
 #[tokio::test]
 async fn examples_fleet_lock_is_reproduced() {
+    // `make lock` rewrites the example lock after the example fleet was edited.
+    if std::env::var_os("FORGELAB_UPDATE_LOCK").is_some() {
+        let bytes = lock_bytes(&examples_fleet()).await;
+        std::fs::write(examples_fleet().join(fleet::LOCK_FILE), bytes).unwrap();
+    }
     check(&examples_fleet()).await;
 }
 

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *" # nightly: the scale scenarios with several seeds
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # The fleets repoplane tests against: the golden-lock and scale tests read it.
+      - uses: actions/checkout@v7
+        with:
+          repository: repoplane/fleets
+          path: fleets
+      - uses: dtolnay/rust-toolchain@1.93
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # The same targets a developer runs, so CI and a laptop cannot drift apart.
+      - run: make lint
+        env:
+          FORGELAB_FLEETS_DIR: ${{ github.workspace }}/fleets
+      # Includes the end-to-end suite: it boots a throwaway Forgejo container through
+      # testcontainers, which the runner's Docker daemon supports out of the box.
+      - run: make test
+        env:
+          FORGELAB_FLEETS_DIR: ${{ github.workspace }}/fleets
+      # The 108-repository fleet through the fault proxy, the pull-request gate for "does it
+      # hold up at size".
+      - run: FORGELAB_E2E=1 FORGELAB_SCALE=1 cargo test -p forgelab --test e2e s4_mixed -- --test-threads=1 --nocapture
+        if: github.event_name != 'schedule'
+        env:
+          FORGELAB_FLEETS_DIR: ${{ github.workspace }}/fleets
+
+  nightly-scale:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: repoplane/fleets
+          path: fleets
+      - uses: dtolnay/rust-toolchain@1.93
+      - uses: Swatinem/rust-cache@v2
+      - run: make scale
+        env:
+          FORGELAB_FLEETS_DIR: ${{ github.workspace }}/fleets
+          FORGELAB_FAULT_SEED: ${{ matrix.seed }}
