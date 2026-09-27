@@ -479,6 +479,15 @@ impl Forge for Client {
         // repository itself, so that a project seeded a moment ago is not reported as unseeded.
         if r.empty {
             r.empty = self.branches(name).await?.is_empty();
+            if r.empty {
+                // No commits -- or a project deleted a moment ago and still answered from a
+                // cache. Only the project itself can say; a 404 now means it is gone.
+                if let Err(e) = self.call(Method::GET, &self.project(name), None).await
+                    && e.is_status(&[404])
+                {
+                    return Ok(None);
+                }
+            }
         }
         Ok(Some(r))
     }

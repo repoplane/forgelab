@@ -40,8 +40,8 @@ impl Env {
             self.concurrency,
             &self.cancel,
             |mut t| async move {
-                let r = match self.forge.get(&t.name).await {
-                    Err(e) => Err(CommandError::from(e)),
+                let r = match self.get_confirmed(&t.name).await {
+                    Err(e) => Err(e),
                     Ok(None) => Ok(()),
                     Ok(Some(live)) => {
                         if caps.topics

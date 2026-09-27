@@ -343,8 +343,14 @@ impl Forge for Client {
         if !raw.name.eq_ignore_ascii_case(&flat_name(name)) {
             return Ok(None);
         }
-        // The repository object does not say whether it has commits (`size` lags), so ask.
-        let branches = self.branches(name).await?;
+        // The repository object does not say whether it has commits (`size` lags), so ask. A
+        // 404 here, after the repository itself answered, is one deleted a moment ago and still
+        // served from a cache: gone, not an error.
+        let branches = match self.branches(name).await {
+            Ok(b) => b,
+            Err(e) if e.is_status(&[404]) => return Ok(None),
+            Err(e) => return Err(e),
+        };
         Ok(Some(Repo {
             name: raw.name,
             default_branch: raw.default_branch,

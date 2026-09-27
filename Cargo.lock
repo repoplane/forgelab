@@ -663,6 +663,7 @@ dependencies = [
  "hex",
  "http",
  "jiff",
+ "libc",
  "rand 0.9.5",
  "reqwest",
  "secrecy",

@@ -243,6 +243,31 @@ impl Env {
         confirm_answer(&line)
     }
 
+    /// Looks a repository up, and does not take one "missing" answer for it: a forge may
+    /// answer 404 for a moment after a write to a repository that is there. A missing
+    /// repository is an exit-2 verdict for verify and a skipped deletion for destroy, so it
+    /// is asked again, for a few seconds, before it is believed.
+    pub(crate) async fn get_confirmed(
+        &self,
+        name: &str,
+    ) -> Result<Option<forge::Repo>, CommandError> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+        let mut pause = std::time::Duration::from_millis(100);
+        loop {
+            match self.forge.get(name).await? {
+                Some(r) => return Ok(Some(r)),
+                None if tokio::time::Instant::now() >= deadline => return Ok(None),
+                None => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(pause) => {}
+                        _ = self.cancel.cancelled() => return Err(CommandError::Other("interrupted".into())),
+                    }
+                    pause = (pause * 2).min(std::time::Duration::from_secs(1));
+                }
+            }
+        }
+    }
+
     pub(crate) fn git_remote(&self, name: &str) -> Result<GitRemote, CommandError> {
         Ok(self.forge.git_remote(name)?)
     }

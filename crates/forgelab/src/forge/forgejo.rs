@@ -262,10 +262,16 @@ impl Forge for Client {
             #[serde(default)]
             topics: Vec<String>,
         }
-        let topics: Topics = self
+        // A forge may answer the repository from a cache for a moment after it was deleted;
+        // the second read then finds nothing. That is a repository that is gone, not an error.
+        let topics: Topics = match self
             .get_json(&format!("{}/topics", self.repo_path(name)))
-            .await?
-            .unwrap_or(Topics { topics: vec![] });
+            .await
+        {
+            Ok(t) => t.unwrap_or(Topics { topics: vec![] }),
+            Err(e) if e.is_status(&[404]) => return Ok(None),
+            Err(e) => return Err(e),
+        };
         Ok(Some(Repo {
             name: raw.name,
             default_branch: raw.default_branch,

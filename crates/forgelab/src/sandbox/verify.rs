@@ -107,7 +107,7 @@ impl Env {
 
     async fn compare_one(&self, s: &mut State) -> Result<(), CommandError> {
         let want = s.want.clone();
-        let Some(live) = self.forge.get(&want.name).await? else {
+        let Some(live) = self.get_confirmed(&want.name).await? else {
             s.guards.push(format!(
                 "missing from {}: run `forgelab apply --sandbox {}`",
                 self.sandbox.org, self.sandbox.name

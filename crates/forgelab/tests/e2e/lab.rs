@@ -118,10 +118,30 @@ fn start_forgejo() -> Forgejo {
     }
 
     let token = mint_token(&base_url);
+    // testcontainers-rs 0.28 has no reaper, and a container held in a static is never dropped,
+    // so the instance is removed when the test process exits.
+    let _ = CONTAINER_ID.set(container.id().to_string());
+    // SAFETY: `remove_container` is a plain C-ABI function with no arguments that only spawns
+    // a process; registering it at exit is what atexit is for.
+    unsafe {
+        libc::atexit(remove_container);
+    }
     Forgejo {
         base_url,
         token,
         _container: container,
+    }
+}
+
+static CONTAINER_ID: OnceLock<String> = OnceLock::new();
+
+extern "C" fn remove_container() {
+    if let Some(id) = CONTAINER_ID.get() {
+        let _ = std::process::Command::new("docker")
+            .args(["rm", "-f", "-v", id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 

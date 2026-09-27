@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::fleet::{self, Lock};
-use crate::forge::{self, ForgeError, Settings};
+use crate::forge::{self, Settings};
 use crate::seed::{self, Built};
 use crate::util::go_slice;
 
@@ -285,7 +285,10 @@ impl Env {
                 &with_marker(&want.topics, marker),
             )
             .await
-            .map_err(|e| CommandError::Other(format!("create: {e}")))?;
+            .map_err(|e| match e {
+                CommandError::Guard(g) => CommandError::Guard(g),
+                other => CommandError::Other(format!("create: {other}")),
+            })?;
         }
 
         // An archived repository rejects every write, so it is lifted for the duration and
@@ -370,45 +373,70 @@ impl Env {
         Ok(())
     }
 
-    /// Creates a repository, and when the forge answered a create with a transient failure --
-    /// a 5xx, a dropped connection -- asks it whether the repository is there before trying
-    /// again. A create is not idempotent, so it is never repeated blindly; but a 503 from a
-    /// forge under load, which is what a fleet of a hundred provokes, must not strand the
-    /// apply either. One that did land is finished the way `Forge::create` would have: with
-    /// its topics set, so the marker is on it.
+    /// Creates a repository, and does not take the forge's first word for a failure that
+    /// may not be one:
+    ///
+    /// - a transient failure -- a 5xx, a dropped connection -- may or may not have landed. A
+    ///   create is not idempotent, so it is never repeated blindly: the forge is asked whether
+    ///   the repository is there, and only if it is not is the create tried again;
+    /// - a conflict means the repository exists after all: the lookup that planned the create
+    ///   was answered from a cache that had not caught up. It is then treated exactly as the
+    ///   plan would have: forgelab's own if it carries the marker, somebody else's otherwise.
+    ///
+    /// One that did land is finished the way `Forge::create` would have: with its topics set,
+    /// so the marker is on it.
     async fn create_verified(
         &self,
         name: &str,
         visibility: &str,
         default_branch: &str,
         topics: &[String],
-    ) -> Result<(), ForgeError> {
+    ) -> Result<(), CommandError> {
         let mut wait = std::time::Duration::from_secs(1);
         for attempt in 1..=5 {
-            match self
+            let err = match self
                 .forge
                 .create(name, visibility, default_branch, topics)
                 .await
             {
                 Ok(()) => return Ok(()),
-                Err(e) if e.class() == forge::Class::Transient && attempt < 5 => {
+                Err(e) => e,
+            };
+            match err.class() {
+                forge::Class::Transient if attempt < 5 => {
                     tracing::debug!(
                         name,
                         attempt,
-                        "create answered a transient failure, checking whether it landed: {e}"
+                        "create answered a transient failure, checking whether it landed: {err}"
                     );
-                    match self.forge.get(name).await? {
-                        Some(_) => return self.forge.set_topics(name, topics).await,
-                        None => {
-                            tokio::select! {
-                                _ = tokio::time::sleep(wait) => {}
-                                _ = self.cancel.cancelled() => return Err(ForgeError::Cancelled),
-                            }
-                            wait *= 2;
-                        }
+                    if self.forge.get(name).await?.is_some() {
+                        return Ok(self.forge.set_topics(name, topics).await?);
                     }
+                    tokio::select! {
+                        _ = tokio::time::sleep(wait) => {}
+                        _ = self.cancel.cancelled() => return Err(CommandError::Other("interrupted".into())),
+                    }
+                    wait *= 2;
                 }
-                Err(e) => return Err(e),
+                forge::Class::Conflict => {
+                    let Some(live) = self.get_confirmed(name).await? else {
+                        return Err(err.into());
+                    };
+                    if self.forge.caps().topics
+                        && !live.topics.iter().any(|t| t == &self.sandbox.marker_topic)
+                    {
+                        return Err(CommandError::Guard(format!(
+                            "{}/{} already exists without the {:?} topic: it is not forgelab's, and apply never adopts. Rename the fixture or remove that repository",
+                            self.sandbox.org, name, self.sandbox.marker_topic
+                        )));
+                    }
+                    tracing::debug!(
+                        name,
+                        "create answered a conflict: the repository is forgelab's after all"
+                    );
+                    return Ok(self.forge.set_topics(name, topics).await?);
+                }
+                _ => return Err(err.into()),
             }
         }
         unreachable!("the loop returns on the last attempt")
