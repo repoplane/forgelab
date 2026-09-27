@@ -59,8 +59,14 @@ pub fn git_env(id: Option<&GitIdentity>, remote: Option<&GitRemote>) -> Vec<(Str
         && let Some(auth) = &remote.auth
     {
         env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
-        env.push(("GIT_CONFIG_KEY_0".into(), format!("http.{}/.extraHeader", remote.origin())));
-        env.push(("GIT_CONFIG_VALUE_0".into(), format!("Authorization: Basic {}", auth.basic())));
+        env.push((
+            "GIT_CONFIG_KEY_0".into(),
+            format!("http.{}/.extraHeader", remote.origin()),
+        ));
+        env.push((
+            "GIT_CONFIG_VALUE_0".into(),
+            format!("Authorization: Basic {}", auth.basic()),
+        ));
     }
     env
 }
@@ -73,7 +79,10 @@ pub fn format_timestamp(ts: &jiff::Timestamp) -> String {
 impl super::GitAuth {
     /// The `user:secret` pair, base64-encoded for a Basic Authorization header.
     pub fn basic(&self) -> String {
-        base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", self.username, self.secret.expose_secret()))
+        base64::engine::general_purpose::STANDARD.encode(format!(
+            "{}:{}",
+            self.username,
+            self.secret.expose_secret()
+        ))
     }
 }

@@ -24,7 +24,10 @@ pub fn digest(root: &Path) -> Result<String, FleetError> {
         .sort_by_file_name();
     for entry in walker {
         let entry = entry.map_err(|e| {
-            let path = e.path().map(|p| p.display().to_string()).unwrap_or_else(|| REPOS_DIR.to_string());
+            let path = e
+                .path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| REPOS_DIR.to_string());
             match e.into_io_error() {
                 Some(io) => FleetError::io(format!("read {path}"), io),
                 None => FleetError::invalid(format!("read {path}: walk error")),
@@ -33,30 +36,40 @@ pub fn digest(root: &Path) -> Result<String, FleetError> {
         if entry.file_type().is_dir() || is_os_junk(&entry.file_name().to_string_lossy()) {
             continue;
         }
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .map_err(|_| FleetError::invalid(format!("{}: outside the fleet", entry.path().display())))?;
+        let rel = entry.path().strip_prefix(root).map_err(|_| {
+            FleetError::invalid(format!("{}: outside the fleet", entry.path().display()))
+        })?;
         let rel = rel
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("/");
-        let exec = is_executable(&entry.path().metadata().map_err(|e| FleetError::io(format!("stat {rel}"), e))?);
+        let exec = is_executable(
+            &entry
+                .path()
+                .metadata()
+                .map_err(|e| FleetError::io(format!("stat {rel}"), e))?,
+        );
         add(&mut h, root, &rel, exec)?;
     }
     Ok(format!("sha256:{}", hex::encode(h.finalize())))
 }
 
 fn add(h: &mut Sha256, root: &Path, rel: &str, exec: bool) -> Result<(), FleetError> {
-    let mut f = fs::File::open(root.join(rel)).map_err(|e| FleetError::io(format!("open {rel}"), e))?;
-    let size = f.metadata().map_err(|e| FleetError::io(format!("stat {rel}"), e))?.len();
+    let mut f =
+        fs::File::open(root.join(rel)).map_err(|e| FleetError::io(format!("open {rel}"), e))?;
+    let size = f
+        .metadata()
+        .map_err(|e| FleetError::io(format!("stat {rel}"), e))?
+        .len();
     // Path, the executable bit and a length-delimited body: everything that reaches the git
     // tree, and nothing a checkout can change on its own.
     h.update(format!("{rel}\0{exec}\0{size}\0").as_bytes());
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = f.read(&mut buf).map_err(|e| FleetError::io(format!("read {rel}"), e))?;
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| FleetError::io(format!("read {rel}"), e))?;
         if n == 0 {
             break;
         }
@@ -90,16 +103,25 @@ mod tests {
     use super::*;
     use crate::fleet::spec::tests::fleet;
 
-    const SPEC: &str = "version: 1\ngit:\n  author: {name: a, email: b}\n  timestamp: \"2026-01-01T00:00:00Z\"\n";
+    const SPEC: &str =
+        "version: 1\ngit:\n  author: {name: a, email: b}\n  timestamp: \"2026-01-01T00:00:00Z\"\n";
 
     #[test]
     fn tracks_content_but_not_junk() {
         let dir = fleet(SPEC, &[("repos/plain/README.md", "# plain\n")]);
         let before = digest(dir.path()).unwrap();
         std::fs::write(dir.path().join("repos/plain/.DS_Store"), "junk").unwrap();
-        assert_eq!(digest(dir.path()).unwrap(), before, "OS junk changed the digest");
+        assert_eq!(
+            digest(dir.path()).unwrap(),
+            before,
+            "OS junk changed the digest"
+        );
         std::fs::write(dir.path().join("repos/plain/README.md"), "# edited\n").unwrap();
-        assert_ne!(digest(dir.path()).unwrap(), before, "an edited fixture did not change the digest");
+        assert_ne!(
+            digest(dir.path()).unwrap(),
+            before,
+            "an edited fixture did not change the digest"
+        );
     }
 
     /// Go's fs.WalkDir sorts entries by name within a directory: "a" the directory comes
@@ -110,11 +132,14 @@ mod tests {
         let mut h = Sha256::new();
         h.update(format!("{SPEC_FILE}\0false\0{}\0", SPEC.len()).as_bytes());
         h.update(SPEC.as_bytes());
-        h.update(b"repos/r/a/x\0false\01\0");
+        h.update(b"repos/r/a/x\0false\x001\0");
         h.update(b"1");
-        h.update(b"repos/r/a.txt\0false\01\0");
+        h.update(b"repos/r/a.txt\0false\x001\0");
         h.update(b"2");
-        assert_eq!(digest(dir.path()).unwrap(), format!("sha256:{}", hex::encode(h.finalize())));
+        assert_eq!(
+            digest(dir.path()).unwrap(),
+            format!("sha256:{}", hex::encode(h.finalize()))
+        );
     }
 
     #[cfg(unix)]
@@ -123,7 +148,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = fleet(SPEC, &[("repos/r/run.sh", "#!/bin/sh\n")]);
         let before = digest(dir.path()).unwrap();
-        std::fs::set_permissions(dir.path().join("repos/r/run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            dir.path().join("repos/r/run.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
         assert_ne!(digest(dir.path()).unwrap(), before);
     }
 }

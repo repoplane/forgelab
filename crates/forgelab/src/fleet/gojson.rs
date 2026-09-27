@@ -17,7 +17,9 @@ pub struct GoFormatter<'a> {
 
 impl Default for GoFormatter<'_> {
     fn default() -> Self {
-        GoFormatter { inner: PrettyFormatter::new() }
+        GoFormatter {
+            inner: PrettyFormatter::new(),
+        }
     }
 }
 
@@ -28,7 +30,11 @@ impl Formatter for GoFormatter<'_> {
     fn end_array<W: ?Sized + io::Write>(&mut self, w: &mut W) -> io::Result<()> {
         self.inner.end_array(w)
     }
-    fn begin_array_value<W: ?Sized + io::Write>(&mut self, w: &mut W, first: bool) -> io::Result<()> {
+    fn begin_array_value<W: ?Sized + io::Write>(
+        &mut self,
+        w: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
         self.inner.begin_array_value(w, first)
     }
     fn end_array_value<W: ?Sized + io::Write>(&mut self, w: &mut W) -> io::Result<()> {
@@ -40,7 +46,11 @@ impl Formatter for GoFormatter<'_> {
     fn end_object<W: ?Sized + io::Write>(&mut self, w: &mut W) -> io::Result<()> {
         self.inner.end_object(w)
     }
-    fn begin_object_key<W: ?Sized + io::Write>(&mut self, w: &mut W, first: bool) -> io::Result<()> {
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        w: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
         self.inner.begin_object_key(w, first)
     }
     fn begin_object_value<W: ?Sized + io::Write>(&mut self, w: &mut W) -> io::Result<()> {
@@ -50,7 +60,11 @@ impl Formatter for GoFormatter<'_> {
         self.inner.end_object_value(w)
     }
 
-    fn write_string_fragment<W: ?Sized + io::Write>(&mut self, w: &mut W, fragment: &str) -> io::Result<()> {
+    fn write_string_fragment<W: ?Sized + io::Write>(
+        &mut self,
+        w: &mut W,
+        fragment: &str,
+    ) -> io::Result<()> {
         let mut start = 0;
         for (i, c) in fragment.char_indices() {
             let esc = match c {
@@ -61,14 +75,18 @@ impl Formatter for GoFormatter<'_> {
                 '\u{2029}' => "\\u2029",
                 _ => continue,
             };
-            w.write_all(fragment[start..i].as_bytes())?;
+            w.write_all(&fragment.as_bytes()[start..i])?;
             w.write_all(esc.as_bytes())?;
             start = i + c.len_utf8();
         }
-        w.write_all(fragment[start..].as_bytes())
+        w.write_all(&fragment.as_bytes()[start..])
     }
 
-    fn write_char_escape<W: ?Sized + io::Write>(&mut self, w: &mut W, esc: CharEscape) -> io::Result<()> {
+    fn write_char_escape<W: ?Sized + io::Write>(
+        &mut self,
+        w: &mut W,
+        esc: CharEscape,
+    ) -> io::Result<()> {
         match esc {
             CharEscape::Backspace => w.write_all(b"\\u0008"),
             CharEscape::FormFeed => w.write_all(b"\\u000c"),

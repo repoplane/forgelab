@@ -18,7 +18,9 @@ pub struct KeyedOnce<K, V> {
 
 impl<K, V> Default for KeyedOnce<K, V> {
     fn default() -> Self {
-        KeyedOnce { cells: Mutex::new(HashMap::new()) }
+        KeyedOnce {
+            cells: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -90,9 +92,13 @@ mod tests {
         }
         assert_eq!(runs.load(Ordering::SeqCst), 1);
 
-        let failed = once.get_or_try_init(&"b".to_string(), async { Err::<u32, &str>("no") }).await;
+        let failed = once
+            .get_or_try_init(&"b".to_string(), async { Err::<u32, &str>("no") })
+            .await;
         assert_eq!(failed, Err("no"));
-        let ok = once.get_or_try_init::<&str, _>(&"b".to_string(), async { Ok(1) }).await;
+        let ok = once
+            .get_or_try_init::<&str, _>(&"b".to_string(), async { Ok(1) })
+            .await;
         assert_eq!(ok, Ok(1));
 
         once.invalidate_where(|k| k.starts_with('a'));

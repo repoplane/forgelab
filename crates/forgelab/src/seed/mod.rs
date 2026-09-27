@@ -35,7 +35,10 @@ pub enum SeedError {
 
 impl SeedError {
     fn io(context: impl Into<String>, source: std::io::Error) -> Self {
-        SeedError::Io { context: context.into(), source }
+        SeedError::Io {
+            context: context.into(),
+            source,
+        }
     }
 }
 
@@ -57,7 +60,11 @@ pub struct GitAuth {
 impl GitRemote {
     /// `scheme://host[:port]`, the scope the Authorization header is limited to.
     pub fn origin(&self) -> String {
-        let mut o = format!("{}://{}", self.url.scheme(), self.url.host_str().unwrap_or(""));
+        let mut o = format!(
+            "{}://{}",
+            self.url.scheme(),
+            self.url.host_str().unwrap_or("")
+        );
         if let Some(p) = self.url.port() {
             o.push(':');
             o.push_str(&p.to_string());
@@ -101,12 +108,24 @@ pub async fn build(root: &Path, r: &Repo, id: &GitIdentity) -> Result<Built, See
         .map_err(|e| SeedError::io("create scratch directory", e))?;
     let env = env::git_env(Some(id), None);
 
-    copy_tree(&root.join(&r.dir), work.path()).map_err(|e| SeedError::Invalid(format!("copy {}: {e}", r.dir)))?;
+    copy_tree(&root.join(&r.dir), work.path())
+        .map_err(|e| SeedError::Invalid(format!("copy {}: {e}", r.dir)))?;
 
     let mut steps: Vec<Vec<String>> = vec![
-        strs(&["-c", &format!("init.defaultBranch={}", r.default_branch), "init", "-q"]),
+        strs(&[
+            "-c",
+            &format!("init.defaultBranch={}", r.default_branch),
+            "init",
+            "-q",
+        ]),
         strs(&["add", "-A"]),
-        strs(&["commit", "-q", "--allow-empty", "-m", &format!("seed: {}", r.name)]),
+        strs(&[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("seed: {}", r.name),
+        ]),
         strs(&["tag", BASELINE_TAG]),
     ];
     for tag in &r.tags {
@@ -116,7 +135,12 @@ pub async fn build(root: &Path, r: &Repo, id: &GitIdentity) -> Result<Built, See
         git(work.path(), &env, &[], args).await?;
     }
     let sha = git(work.path(), &env, &[], &strs(&["rev-parse", "HEAD"])).await?;
-    Ok(Built { sha, dir: work, branch: r.default_branch.clone(), env })
+    Ok(Built {
+        sha,
+        dir: work,
+        branch: r.default_branch.clone(),
+        env,
+    })
 }
 
 impl Built {
@@ -126,9 +150,22 @@ impl Built {
     /// replaces the single seed commit, which is never a fast-forward.
     pub async fn push(&self, remote: &GitRemote) -> Result<(), SeedError> {
         let mut env = self.env.clone();
-        env.extend(env::git_env(None, Some(remote)).into_iter().filter(|(k, _)| k.starts_with("GIT_CONFIG_")));
-        let args = strs(&["push", "-q", "--force", remote.url.as_str(), &format!("refs/heads/{}", self.branch), "--tags"]);
-        git_network(self.dir.path(), &env, &remote.secrets(), &args).await.map(drop)
+        env.extend(
+            env::git_env(None, Some(remote))
+                .into_iter()
+                .filter(|(k, _)| k.starts_with("GIT_CONFIG_")),
+        );
+        let args = strs(&[
+            "push",
+            "-q",
+            "--force",
+            remote.url.as_str(),
+            &format!("refs/heads/{}", self.branch),
+            "--tags",
+        ]);
+        git_network(self.dir.path(), &env, &remote.secrets(), &args)
+            .await
+            .map(drop)
     }
 
     /// The scratch directory, for tests.
@@ -140,16 +177,38 @@ impl Built {
 /// Points `branch`, and every declared tag, back at the baseline tag that is already on the
 /// forge. It fetches one commit and pushes refs only -- no fixture tree, no clone cache, and
 /// no knowledge of what the content is.
-pub async fn reset_to_baseline(remote: &GitRemote, branch: &str, tags: &[String]) -> Result<(), SeedError> {
+pub async fn reset_to_baseline(
+    remote: &GitRemote,
+    branch: &str,
+    tags: &[String],
+) -> Result<(), SeedError> {
     let work = scratch("forgelab-reset-")?;
     let env = env::git_env(None, Some(remote));
     let base = format!("refs/tags/{BASELINE_TAG}");
-    let mut push = strs(&["push", "-q", "--force", remote.url.as_str(), &format!("{base}:refs/heads/{branch}")]);
+    let mut push = strs(&[
+        "push",
+        "-q",
+        "--force",
+        remote.url.as_str(),
+        &format!("{base}:refs/heads/{branch}"),
+    ]);
     for tag in tags {
         push.push(format!("{base}:refs/tags/{tag}"));
     }
     git(work.path(), &env, &[], &strs(&["init", "-q", "--bare"])).await?;
-    git_network(work.path(), &env, &remote.secrets(), &strs(&["fetch", "-q", "--depth=1", remote.url.as_str(), &format!("{base}:{base}")])).await?;
+    git_network(
+        work.path(),
+        &env,
+        &remote.secrets(),
+        &strs(&[
+            "fetch",
+            "-q",
+            "--depth=1",
+            remote.url.as_str(),
+            &format!("{base}:{base}"),
+        ]),
+    )
+    .await?;
     git_network(work.path(), &env, &remote.secrets(), &push).await?;
     Ok(())
 }
@@ -167,7 +226,9 @@ pub async fn delete_remote_refs(remote: &GitRemote, refs: &[String]) -> Result<(
         push.push(format!(":{r}"));
     }
     git(work.path(), &env, &[], &strs(&["init", "-q", "--bare"])).await?;
-    git_network(work.path(), &env, &remote.secrets(), &push).await.map(drop)
+    git_network(work.path(), &env, &remote.secrets(), &push)
+        .await
+        .map(drop)
 }
 
 /// Reads a repository's branches and tags straight from git, as name -> commit SHA.
@@ -177,10 +238,18 @@ pub async fn delete_remote_refs(remote: &GitRemote, refs: &[String]) -> Result<(
 /// write -- long enough for a verify run right after a test to miss a pushed commit. git has
 /// no such window, answers the same way on every forge, and returns both kinds of ref in one
 /// round trip. An annotated tag is reported at the commit it points to.
-pub async fn ls_remote(remote: &GitRemote) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>), SeedError> {
+pub async fn ls_remote(
+    remote: &GitRemote,
+) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>), SeedError> {
     let work = scratch("forgelab-ls-")?;
     let env = env::git_env(None, Some(remote));
-    let out = git_network(work.path(), &env, &remote.secrets(), &strs(&["ls-remote", "--heads", "--tags", remote.url.as_str()])).await?;
+    let out = git_network(
+        work.path(),
+        &env,
+        &remote.secrets(),
+        &strs(&["ls-remote", "--heads", "--tags", remote.url.as_str()]),
+    )
+    .await?;
     Ok(parse_ls_remote(&out))
 }
 
@@ -189,7 +258,9 @@ pub fn parse_ls_remote(out: &str) -> (BTreeMap<String, String>, BTreeMap<String,
     let mut branches = BTreeMap::new();
     let mut tags = BTreeMap::new();
     for line in out.lines() {
-        let Some((sha, r)) = line.split_once('\t') else { continue };
+        let Some((sha, r)) = line.split_once('\t') else {
+            continue;
+        };
         if let Some(b) = r.strip_prefix("refs/heads/") {
             branches.insert(b.to_string(), sha.to_string());
         } else if let Some(t) = r.strip_suffix("^{}") {
@@ -206,9 +277,22 @@ pub fn parse_ls_remote(out: &str) -> (BTreeMap<String, String>, BTreeMap<String,
 /// Checks that the git on PATH is recent enough to take credentials through `GIT_CONFIG_*`
 /// (2.31, March 2021). Called once, before any network operation.
 pub async fn check_git() -> Result<String, SeedError> {
-    let out = git(Path::new("."), &env::git_env(None, None), &[], &strs(&["--version"])).await?;
-    let version = out.trim().strip_prefix("git version ").unwrap_or(out.trim()).to_string();
-    let mut parts = version.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse::<u32>().unwrap_or(0));
+    let out = git(
+        Path::new("."),
+        &env::git_env(None, None),
+        &[],
+        &strs(&["--version"]),
+    )
+    .await?;
+    let version = out
+        .trim()
+        .strip_prefix("git version ")
+        .unwrap_or(out.trim())
+        .to_string();
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<u32>().unwrap_or(0));
     let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
     if (major, minor) < (2, 31) {
         return Err(SeedError::Invalid(format!(
@@ -219,7 +303,10 @@ pub async fn check_git() -> Result<String, SeedError> {
 }
 
 fn scratch(prefix: &str) -> Result<TempDir, SeedError> {
-    tempfile::Builder::new().prefix(prefix).tempdir().map_err(|e| SeedError::io("create scratch directory", e))
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .map_err(|e| SeedError::io("create scratch directory", e))
 }
 
 fn strs(a: &[&str]) -> Vec<String> {
@@ -251,7 +338,12 @@ fn is_transient_git_failure(stderr: &str) -> bool {
 }
 
 /// Runs a git command that talks to a forge, retrying a transient failure a few times.
-async fn git_network(dir: &Path, env: &[(String, String)], secrets: &[String], args: &[String]) -> Result<String, SeedError> {
+async fn git_network(
+    dir: &Path,
+    env: &[(String, String)],
+    secrets: &[String],
+    args: &[String],
+) -> Result<String, SeedError> {
     let mut wait = Duration::from_secs(1);
     for attempt in 1..=3 {
         match git(dir, env, secrets, args).await {
@@ -269,18 +361,29 @@ async fn git_network(dir: &Path, env: &[(String, String)], secrets: &[String], a
 
 /// Runs one git command in `dir` and returns its trimmed stdout. `secrets` must not reach a
 /// log or a CI transcript, and are redacted from the error.
-async fn git(dir: &Path, env: &[(String, String)], secrets: &[String], args: &[String]) -> Result<String, SeedError> {
+async fn git(
+    dir: &Path,
+    env: &[(String, String)],
+    secrets: &[String],
+    args: &[String],
+) -> Result<String, SeedError> {
     let mut full: Vec<String> = strs(&[
-        "-c", "commit.gpgsign=false",
-        "-c", "tag.gpgsign=false",
-        "-c", "gc.auto=0",
-        "-c", "core.autocrlf=false",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "tag.gpgsign=false",
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "core.autocrlf=false",
         // Not covered by GIT_CONFIG_GLOBAL=/dev/null: git looks for the global ignore and
         // attributes files at their default XDG paths regardless of which config files it
         // reads. A machine with "*.properties" in ~/.config/git/ignore would otherwise drop
         // that file from the commit and produce a different SHA, silently, on that machine only.
-        "-c", "core.excludesFile=/dev/null",
-        "-c", "core.attributesFile=/dev/null",
+        "-c",
+        "core.excludesFile=/dev/null",
+        "-c",
+        "core.attributesFile=/dev/null",
     ]);
     full.extend(args.iter().cloned());
     let mut cmd = tokio::process::Command::new("git");
@@ -292,7 +395,10 @@ async fn git(dir: &Path, env: &[(String, String)], secrets: &[String], args: &[S
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let out = cmd.output().await.map_err(|e| SeedError::io("run git", e))?;
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| SeedError::io("run git", e))?;
     if !out.status.success() {
         let status = match out.status.code() {
             Some(c) => format!("exit status {c}"),
@@ -333,9 +439,12 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
             let name = e.file_name();
             let rel = rel.join(&name);
             let target = dst.join(&rel);
-            let ft = e.file_type().map_err(|err| format!("{}: {err}", rel.display()))?;
+            let ft = e
+                .file_type()
+                .map_err(|err| format!("{}: {err}", rel.display()))?;
             if ft.is_dir() {
-                std::fs::create_dir_all(&target).map_err(|err| format!("mkdir {}: {err}", target.display()))?;
+                std::fs::create_dir_all(&target)
+                    .map_err(|err| format!("mkdir {}: {err}", target.display()))?;
                 walk(src, &rel, dst)?;
                 continue;
             }
@@ -343,14 +452,25 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
                 continue;
             }
             if !ft.is_file() {
-                return Err(format!("{}: only regular files and directories may be seeded", src.join(&rel).display()));
+                return Err(format!(
+                    "{}: only regular files and directories may be seeded",
+                    src.join(&rel).display()
+                ));
             }
-            let meta = e.metadata().map_err(|err| format!("{}: {err}", rel.display()))?;
-            let mode = if crate::fleet::digest::is_executable(&meta) { 0o755 } else { 0o644 };
+            let meta = e
+                .metadata()
+                .map_err(|err| format!("{}: {err}", rel.display()))?;
+            let mode = if crate::fleet::digest::is_executable(&meta) {
+                0o755
+            } else {
+                0o644
+            };
             if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent).map_err(|err| format!("mkdir {}: {err}", parent.display()))?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("mkdir {}: {err}", parent.display()))?;
             }
-            std::fs::copy(src.join(&rel), &target).map_err(|err| format!("copy {}: {err}", rel.display()))?;
+            std::fs::copy(src.join(&rel), &target)
+                .map_err(|err| format!("copy {}: {err}", rel.display()))?;
             set_mode(&target, mode).map_err(|err| format!("chmod {}: {err}", rel.display()))?;
         }
         Ok(())
@@ -383,7 +503,10 @@ mod tests {
 
     fn identity() -> GitIdentity {
         GitIdentity {
-            author: Author { name: "Forgelab Fixture".into(), email: "fixture@forgelab.test".into() },
+            author: Author {
+                name: "Forgelab Fixture".into(),
+                email: "fixture@forgelab.test".into(),
+            },
             timestamp: "2026-01-01T00:00:00Z".parse().unwrap(),
         }
     }
@@ -397,7 +520,13 @@ mod tests {
         std::fs::write(svc.join("run.sh"), "#!/bin/sh\n").unwrap();
         set_mode(&svc.join("run.sh"), 0o755).unwrap();
         std::fs::write(svc.join(".DS_Store"), "junk").unwrap();
-        let repo = Repo { name: "svc".into(), dir: "repos/svc".into(), default_branch: "main".into(), tags: vec!["v1".into()], ..Repo::default() };
+        let repo = Repo {
+            name: "svc".into(),
+            dir: "repos/svc".into(),
+            default_branch: "main".into(),
+            tags: vec!["v1".into()],
+            ..Repo::default()
+        };
         (dir, repo)
     }
 
@@ -408,7 +537,10 @@ mod tests {
     #[tokio::test]
     async fn build_is_deterministic() {
         let (dir, repo) = fixture();
-        let (first, second) = (build_sha(dir.path(), &repo).await, build_sha(dir.path(), &repo).await);
+        let (first, second) = (
+            build_sha(dir.path(), &repo).await,
+            build_sha(dir.path(), &repo).await,
+        );
         assert_eq!(first, second);
         assert_eq!(first.len(), 40);
     }
@@ -450,12 +582,16 @@ mod tests {
     #[test]
     fn redact_removes_every_secret() {
         let secrets = vec!["s3cret".to_string(), "czNjcmV0".to_string()];
-        assert_eq!(redact("push s3cret failed czNjcmV0", &secrets), "push <redacted> failed <redacted>");
+        assert_eq!(
+            redact("push s3cret failed czNjcmV0", &secrets),
+            "push <redacted> failed <redacted>"
+        );
     }
 
     #[test]
     fn ls_remote_prefers_peeled_tags() {
-        let out = "aaa\trefs/heads/main\nbbb\trefs/tags/v1\nccc\trefs/tags/v1^{}\nddd\trefs/tags/v2\n";
+        let out =
+            "aaa\trefs/heads/main\nbbb\trefs/tags/v1\nccc\trefs/tags/v1^{}\nddd\trefs/tags/v2\n";
         let (branches, tags) = parse_ls_remote(out);
         assert_eq!(branches["main"], "aaa");
         assert_eq!(tags["v1"], "ccc");
@@ -466,12 +602,26 @@ mod tests {
     fn auth_header_is_scoped_to_the_origin() {
         let remote = GitRemote {
             url: "http://localhost:3000/org/repo.git".parse().unwrap(),
-            auth: Some(GitAuth { username: "forgelab".into(), secret: "tok".to_string().into() }),
+            auth: Some(GitAuth {
+                username: "forgelab".into(),
+                secret: "tok".to_string().into(),
+            }),
         };
         let env = env::git_env(None, Some(&remote));
-        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()).unwrap();
-        assert_eq!(get("GIT_CONFIG_KEY_0"), "http.http://localhost:3000/.extraHeader");
-        assert_eq!(get("GIT_CONFIG_VALUE_0"), "Authorization: Basic Zm9yZ2VsYWI6dG9r");
+        let get = |k: &str| {
+            env.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        assert_eq!(
+            get("GIT_CONFIG_KEY_0"),
+            "http.http://localhost:3000/.extraHeader"
+        );
+        assert_eq!(
+            get("GIT_CONFIG_VALUE_0"),
+            "Authorization: Basic Zm9yZ2VsYWI6dG9r"
+        );
         assert!(env.iter().all(|(k, _)| k != "GIT_DIR"));
     }
 

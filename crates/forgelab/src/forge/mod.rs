@@ -17,7 +17,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 pub use error::{Class, ForgeError, TransportError};
-pub use http::{HttpClient, ReqwestTransport, RequestOpts, RetryPolicy, ScriptedTransport, Transport, WriteLane};
+pub use http::{
+    HttpClient, RequestOpts, ReqwestTransport, RetryPolicy, ScriptedTransport, Transport, WriteLane,
+};
 
 pub use crate::seed::{GitAuth, GitRemote};
 
@@ -156,7 +158,13 @@ pub trait Forge: Send + Sync {
     /// forgelab the repository is its own, and an unmarked repository is one that a re-run of
     /// apply will refuse to touch. A forge that cannot set them in the same call sets them
     /// next, and deletes what it just created if that fails.
-    async fn create(&self, name: &str, visibility: &str, default_branch: &str, topics: &[String]) -> Result<(), ForgeError>;
+    async fn create(
+        &self,
+        name: &str,
+        visibility: &str,
+        default_branch: &str,
+        topics: &[String],
+    ) -> Result<(), ForgeError>;
 
     /// Removes the repository. One that is already gone is not an error: a destroy that is
     /// run again, or that raced a cache, must still finish.
@@ -246,9 +254,15 @@ mod tests {
     #[test]
     fn names() {
         assert_eq!(flat_name("platform/core/api"), "platform-core-api");
-        assert_eq!(split_namespace("platform/core/api"), ("platform/core", "api"));
+        assert_eq!(
+            split_namespace("platform/core/api"),
+            ("platform/core", "api")
+        );
         assert_eq!(split_namespace("api"), ("", "api"));
-        assert_eq!(path_escape("acme-sandbox/services"), "acme-sandbox%2Fservices");
+        assert_eq!(
+            path_escape("acme-sandbox/services"),
+            "acme-sandbox%2Fservices"
+        );
         assert_eq!(escape_ref("feature/a b"), "feature/a%20b");
         assert!(NamespaceDepth::Depth(1).holds("platform"));
         assert!(!NamespaceDepth::Depth(1).holds("platform/core"));

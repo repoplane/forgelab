@@ -1,0 +1,37 @@
+# S4, the pull-request gate: everything at half probability, through the proxy so that git
+# traffic is faulted too. max_per_path caps keep every repository convergent within the
+# client's ten-minute budget.
+rules:
+  - name: gh-secondary
+    match: { methods: [POST, PATCH, PUT, DELETE], path: "/api/**", scope: api }
+    when: { probability: 0.015, max_per_path: 3 }
+    inject:
+      status: 403
+      headers: { X-RateLimit-Remaining: "4264" }
+      body: '{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits"}'
+  - name: 429-bare
+    match: { path: "/api/**", scope: api }
+    when: { probability: 0.01, max_per_path: 3 }
+    inject: { status: 429 }
+  - name: 429-retry-after
+    match: { path: "/api/**", scope: api }
+    when: { probability: 0.01, max_per_path: 3 }
+    inject: { status: 429, headers: { Retry-After: "2" } }
+  - name: flaky-5xx
+    match: { path: "/api/**", scope: api }
+    when: { probability: 0.025, max_per_path: 3 }
+    inject: { status: 503 }
+  - name: resets
+    match: { scope: any }
+    when: { probability: 0.005, max_per_path: 2 }
+    inject: { reset: true }
+  - name: slow
+    match: { scope: any }
+    when: { probability: 0.15 }
+    inject: { latency_ms: [50, 800] }
+  - name: stale-repo-after-write
+    match: { methods: [GET], path: "/api/v1/repos/*/*", scope: api }
+    stale: { after_mutation_on: same_repo, for_secs: 3, missing_as: not_found }
+  - name: null-branches-after-push
+    match: { methods: [GET], path: "/api/v1/repos/*/*/branches", scope: api }
+    stale: { after_mutation_on: git_receive_pack_same_repo, for_secs: 2, body: "null" }

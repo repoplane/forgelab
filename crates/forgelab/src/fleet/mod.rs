@@ -32,7 +32,10 @@ impl FleetError {
     }
 
     pub fn io(context: impl Into<String>, source: std::io::Error) -> Self {
-        FleetError::Io { context: context.into(), source }
+        FleetError::Io {
+            context: context.into(),
+            source,
+        }
     }
 
     /// True when the underlying file does not exist.

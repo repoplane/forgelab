@@ -21,7 +21,11 @@ use super::error::{Class, ForgeError, TransportError, reason};
 /// script answers in-process; the fault layer wraps either.
 #[async_trait]
 pub trait Transport: Send + Sync {
-    async fn send(&self, req: Request<Bytes>, timeout: Duration) -> Result<Response<Bytes>, TransportError>;
+    async fn send(
+        &self,
+        req: Request<Bytes>,
+        timeout: Duration,
+    ) -> Result<Response<Bytes>, TransportError>;
 }
 
 /// The real thing. Follows redirects, as Go's default client did: that is how a renamed
@@ -43,7 +47,11 @@ impl ReqwestTransport {
 
 #[async_trait]
 impl Transport for ReqwestTransport {
-    async fn send(&self, req: Request<Bytes>, timeout: Duration) -> Result<Response<Bytes>, TransportError> {
+    async fn send(
+        &self,
+        req: Request<Bytes>,
+        timeout: Duration,
+    ) -> Result<Response<Bytes>, TransportError> {
         let (parts, body) = req.into_parts();
         let url = parts.uri.to_string();
         let mut builder = self.client.request(parts.method, url).timeout(timeout);
@@ -58,8 +66,15 @@ impl Transport for ReqwestTransport {
         })?;
         let status = resp.status();
         let headers = resp.headers().clone();
-        let bytes = resp.bytes().await.map_err(|e| TransportError { message: describe(&e), before_send: false, timeout: e.is_timeout() })?;
-        let mut out = Response::builder().status(status).body(bytes).expect("a status is a response");
+        let bytes = resp.bytes().await.map_err(|e| TransportError {
+            message: describe(&e),
+            before_send: false,
+            timeout: e.is_timeout(),
+        })?;
+        let mut out = Response::builder()
+            .status(status)
+            .body(bytes)
+            .expect("a status is a response");
         *out.headers_mut() = headers;
         Ok(out)
     }
@@ -86,14 +101,22 @@ fn describe(e: &reqwest::Error) -> String {
 
 /// A transport that answers from a closure, the way Go's `httptest` handlers did, and
 /// remembers every request it saw as `METHOD /path`.
+/// A scripted answer to one request.
+pub type Handler = dyn Fn(&Request<Bytes>) -> Response<Bytes> + Send + Sync;
+
 pub struct ScriptedTransport {
-    handler: Arc<dyn Fn(&Request<Bytes>) -> Response<Bytes> + Send + Sync>,
+    handler: Arc<Handler>,
     seen: Mutex<Vec<String>>,
 }
 
 impl ScriptedTransport {
-    pub fn new(handler: impl Fn(&Request<Bytes>) -> Response<Bytes> + Send + Sync + 'static) -> Arc<Self> {
-        Arc::new(ScriptedTransport { handler: Arc::new(handler), seen: Mutex::new(Vec::new()) })
+    pub fn new(
+        handler: impl Fn(&Request<Bytes>) -> Response<Bytes> + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(ScriptedTransport {
+            handler: Arc::new(handler),
+            seen: Mutex::new(Vec::new()),
+        })
     }
 
     /// Every request so far, as `METHOD /path` (the path as sent, percent-encoding kept).
@@ -107,14 +130,24 @@ impl ScriptedTransport {
 
     /// A response with a status and a body, for handlers.
     pub fn reply(status: u16, body: &str) -> Response<Bytes> {
-        Response::builder().status(status).body(Bytes::from(body.to_string())).unwrap()
+        Response::builder()
+            .status(status)
+            .body(Bytes::from(body.to_string()))
+            .unwrap()
     }
 }
 
 #[async_trait]
 impl Transport for ScriptedTransport {
-    async fn send(&self, req: Request<Bytes>, _timeout: Duration) -> Result<Response<Bytes>, TransportError> {
-        self.seen.lock().unwrap().push(format!("{} {}", req.method(), req.uri().path()));
+    async fn send(
+        &self,
+        req: Request<Bytes>,
+        _timeout: Duration,
+    ) -> Result<Response<Bytes>, TransportError> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("{} {}", req.method(), req.uri().path()));
         Ok((self.handler)(&req))
     }
 }
@@ -157,7 +190,10 @@ pub struct WriteLane {
 
 impl WriteLane {
     pub fn new(min_interval: Duration) -> Arc<Self> {
-        Arc::new(WriteLane { next: tokio::sync::Mutex::new(Instant::now()), min_interval })
+        Arc::new(WriteLane {
+            next: tokio::sync::Mutex::new(Instant::now()),
+            min_interval,
+        })
     }
 
     /// Waits for the lane and for the pacing interval; the guard holds the lane until dropped.
@@ -199,13 +235,21 @@ pub struct Answer {
 }
 
 impl Answer {
-    pub fn json<T: DeserializeOwned>(&self, method: &Method, path: &str) -> Result<Option<T>, ForgeError> {
+    pub fn json<T: DeserializeOwned>(
+        &self,
+        method: &Method,
+        path: &str,
+    ) -> Result<Option<T>, ForgeError> {
         if self.body.is_empty() {
             return Ok(None);
         }
         serde_json::from_slice(&self.body)
             .map(Some)
-            .map_err(|e| ForgeError::Decode { method: method.to_string(), path: path.to_string(), message: e.to_string() })
+            .map_err(|e| ForgeError::Decode {
+                method: method.to_string(),
+                path: path.to_string(),
+                message: e.to_string(),
+            })
     }
 
     pub fn header(&self, name: &str) -> Option<&str> {
@@ -214,7 +258,12 @@ impl Answer {
 }
 
 impl HttpClient {
-    pub fn new(forge: &'static str, transport: Arc<dyn Transport>, classify: Classifier, default_headers: HeaderMap) -> Self {
+    pub fn new(
+        forge: &'static str,
+        transport: Arc<dyn Transport>,
+        classify: Classifier,
+        default_headers: HeaderMap,
+    ) -> Self {
         HttpClient {
             forge,
             transport,
@@ -246,7 +295,13 @@ impl HttpClient {
     }
 
     /// Sends a JSON request and decodes a JSON answer, if any.
-    pub async fn json<T: DeserializeOwned>(&self, method: Method, url: &str, body: Option<&(impl Serialize + ?Sized)>, opts: RequestOpts) -> Result<(HeaderMap, Option<T>), ForgeError> {
+    pub async fn json<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<&(impl Serialize + ?Sized)>,
+        opts: RequestOpts,
+    ) -> Result<(HeaderMap, Option<T>), ForgeError> {
         let path = path_of(url);
         let answer = self.send(method.clone(), url, body, opts).await?;
         let decoded = answer.json(&method, &path)?;
@@ -254,14 +309,29 @@ impl HttpClient {
     }
 
     /// Sends a request whose answer body does not matter.
-    pub async fn call(&self, method: Method, url: &str, body: Option<&(impl Serialize + ?Sized)>, opts: RequestOpts) -> Result<Answer, ForgeError> {
+    pub async fn call(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<&(impl Serialize + ?Sized)>,
+        opts: RequestOpts,
+    ) -> Result<Answer, ForgeError> {
         self.send(method, url, body, opts).await
     }
 
-    async fn send(&self, method: Method, url: &str, body: Option<&(impl Serialize + ?Sized)>, opts: RequestOpts) -> Result<Answer, ForgeError> {
+    async fn send(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<&(impl Serialize + ?Sized)>,
+        opts: RequestOpts,
+    ) -> Result<Answer, ForgeError> {
         let path = path_of(url);
         let raw = match body {
-            Some(b) => Bytes::from(serde_json::to_vec(b).map_err(|e| ForgeError::msg(format!("encode request: {e}")))?),
+            Some(b) => Bytes::from(
+                serde_json::to_vec(b)
+                    .map_err(|e| ForgeError::msg(format!("encode request: {e}")))?,
+            ),
             None => Bytes::new(),
         };
         let has_body = body.is_some();
@@ -270,7 +340,10 @@ impl HttpClient {
 
         // Held for the whole logical request, pauses included: a mutation waiting out a rate
         // limit must not let another one through.
-        let _lane = match (&self.write_lane, method == Method::GET || method == Method::HEAD) {
+        let _lane = match (
+            &self.write_lane,
+            method == Method::GET || method == Method::HEAD,
+        ) {
             (Some(lane), false) => Some(lane.acquire().await),
             _ => None,
         };
@@ -283,9 +356,14 @@ impl HttpClient {
                 req = req.header(k, v);
             }
             if has_body {
-                req = req.header(http::header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                req = req.header(
+                    http::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
             }
-            let req = req.body(raw.clone()).map_err(|e| ForgeError::msg(format!("build request: {e}")))?;
+            let req = req
+                .body(raw.clone())
+                .map_err(|e| ForgeError::msg(format!("build request: {e}")))?;
 
             let sent = tokio::select! {
                 r = self.transport.send(req, self.policy.timeout) => r,
@@ -301,21 +379,34 @@ impl HttpClient {
                         self.sleep(pause).await?;
                         continue;
                     }
-                    return Err(ForgeError::Transport { method: method.to_string(), path, source: te });
+                    return Err(ForgeError::Transport {
+                        method: method.to_string(),
+                        path,
+                        source: te,
+                    });
                 }
             };
 
             let status = resp.status().as_u16();
             if (200..300).contains(&status) {
                 let (parts, body) = resp.into_parts();
-                return Ok(Answer { status, headers: parts.headers, body });
+                return Ok(Answer {
+                    status,
+                    headers: parts.headers,
+                    body,
+                });
             }
             let Classified { class, retry_after } = (self.classify)(&resp);
             match class {
                 Class::RateLimited => {
                     let wait = retry_after.unwrap_or(self.policy.default_rate_limit_wait);
                     if Instant::now() + wait > deadline {
-                        return Err(ForgeError::RateLimitExceeded { forge: self.forge, method: method.to_string(), path, wait });
+                        return Err(ForgeError::RateLimitExceeded {
+                            forge: self.forge,
+                            method: method.to_string(),
+                            path,
+                            wait,
+                        });
                     }
                     tracing::debug!(forge = self.forge, %method, path, wait_secs = wait.as_secs(), "rate limited, waiting");
                     self.sleep(wait).await?;
@@ -332,14 +423,29 @@ impl HttpClient {
                 _ => {}
             }
             let body = String::from_utf8_lossy(resp.body()).trim().to_string();
-            let body = if body.len() > 2048 { format!("{}…", &body[..body.floor_char_boundary(2048)]) } else { body };
-            return Err(ForgeError::Status { class, status, reason: reason(status), method: method.to_string(), path, body, retry_after });
+            let body = if body.len() > 2048 {
+                format!("{}…", &body[..body.floor_char_boundary(2048)])
+            } else {
+                body
+            };
+            return Err(ForgeError::Status {
+                class,
+                status,
+                reason: reason(status),
+                method: method.to_string(),
+                path,
+                body,
+                retry_after,
+            });
         }
     }
 
     /// Exponential backoff with full jitter, capped.
     fn backoff(&self, attempt: u32) -> Duration {
-        let exp = self.policy.base.saturating_mul(2u32.saturating_pow(attempt.saturating_sub(1)));
+        let exp = self
+            .policy
+            .base
+            .saturating_mul(2u32.saturating_pow(attempt.saturating_sub(1)));
         let cap = exp.min(self.policy.cap);
         let jitter: f64 = rand::random::<f64>();
         cap.mul_f64(jitter.max(0.1))
@@ -383,14 +489,25 @@ mod tests {
         let t = ScriptedTransport::new(move |_| {
             // Six secondary limits in a row: more than the four attempts the Go client allowed.
             if n2.fetch_add(1, Ordering::SeqCst) < 6 {
-                ScriptedTransport::reply(403, r#"{"message":"You have exceeded a secondary rate limit"}"#)
+                ScriptedTransport::reply(
+                    403,
+                    r#"{"message":"You have exceeded a secondary rate limit"}"#,
+                )
             } else {
                 ScriptedTransport::reply(200, r#"{"ok":true}"#)
             }
         });
         let c = client(t.clone(), super::super::classify::github);
         let started = Instant::now();
-        let (_, v): (_, Option<serde_json::Value>) = c.json(Method::POST, "http://x/api/thing", Some(&serde_json::json!({})), RequestOpts::default()).await.unwrap();
+        let (_, v): (_, Option<serde_json::Value>) = c
+            .json(
+                Method::POST,
+                "http://x/api/thing",
+                Some(&serde_json::json!({})),
+                RequestOpts::default(),
+            )
+            .await
+            .unwrap();
         assert_eq!(v.unwrap()["ok"], true);
         assert_eq!(t.seen().len(), 7);
         assert!(started.elapsed() >= Duration::from_secs(360));
@@ -398,14 +515,36 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_exhausted_hourly_limit_is_an_error_not_an_hours_sleep() {
-        let reset = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 2400).to_string();
+        let reset = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 2400)
+            .to_string();
         let t = ScriptedTransport::new(move |_| {
-            Response::builder().status(403).header("X-RateLimit-Remaining", "0").header("X-RateLimit-Reset", &reset).body(Bytes::new()).unwrap()
+            Response::builder()
+                .status(403)
+                .header("X-RateLimit-Remaining", "0")
+                .header("X-RateLimit-Reset", &reset)
+                .body(Bytes::new())
+                .unwrap()
         });
         let c = client(t.clone(), super::super::classify::github);
-        let err = c.call(Method::GET, "http://x/api/thing", None::<&()>, RequestOpts::default()).await.unwrap_err();
+        let err = c
+            .call(
+                Method::GET,
+                "http://x/api/thing",
+                None::<&()>,
+                RequestOpts::default(),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, ForgeError::RateLimitExceeded { .. }), "{err}");
-        assert!(err.to_string().contains("rate limited by Test; retry in 40m"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("rate limited by Test; retry in 40m"),
+            "{err}"
+        );
         assert_eq!(t.seen().len(), 1);
     }
 
@@ -414,26 +553,57 @@ mod tests {
         let n = Arc::new(AtomicUsize::new(0));
         let n2 = n.clone();
         let t = ScriptedTransport::new(move |_| {
-            if n2.fetch_add(1, Ordering::SeqCst) < 2 { ScriptedTransport::reply(503, "") } else { ScriptedTransport::reply(200, "") }
+            if n2.fetch_add(1, Ordering::SeqCst) < 2 {
+                ScriptedTransport::reply(503, "")
+            } else {
+                ScriptedTransport::reply(200, "")
+            }
         });
         let c = client(t.clone(), super::super::classify::generic);
-        c.call(Method::GET, "http://x/a", None::<&()>, RequestOpts::default()).await.unwrap();
+        c.call(
+            Method::GET,
+            "http://x/a",
+            None::<&()>,
+            RequestOpts::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(t.seen().len(), 3);
 
         n.store(0, Ordering::SeqCst);
         t.reset();
-        let err = c.call(Method::POST, "http://x/a", None::<&()>, RequestOpts::default()).await.unwrap_err();
+        let err = c
+            .call(
+                Method::POST,
+                "http://x/a",
+                None::<&()>,
+                RequestOpts::default(),
+            )
+            .await
+            .unwrap_err();
         assert!(err.is_status(&[503]), "{err}");
         assert_eq!(t.seen().len(), 1, "a POST is not repeated on a 5xx");
     }
 
     #[tokio::test(start_paused = true)]
     async fn errors_carry_class_and_text() {
-        let t = ScriptedTransport::new(|_| ScriptedTransport::reply(404, r#"{"message":"Not Found"}"#));
+        let t =
+            ScriptedTransport::new(|_| ScriptedTransport::reply(404, r#"{"message":"Not Found"}"#));
         let c = client(t, super::super::classify::generic);
-        let err = c.call(Method::GET, "http://x/api/v1/repos/o/r", None::<&()>, RequestOpts::default()).await.unwrap_err();
+        let err = c
+            .call(
+                Method::GET,
+                "http://x/api/v1/repos/o/r",
+                None::<&()>,
+                RequestOpts::default(),
+            )
+            .await
+            .unwrap_err();
         assert!(err.is_not_found());
-        assert_eq!(err.to_string(), r#"GET /api/v1/repos/o/r: 404 Not Found: {"message":"Not Found"}"#);
+        assert_eq!(
+            err.to_string(),
+            r#"GET /api/v1/repos/o/r: 404 Not Found: {"message":"Not Found"}"#
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -447,16 +617,31 @@ mod tests {
             i2.fetch_sub(1, Ordering::SeqCst);
             ScriptedTransport::reply(200, "")
         });
-        let c = Arc::new(client(t.clone(), super::super::classify::generic).with_write_lane(WriteLane::new(Duration::from_secs(1))));
+        let c = Arc::new(
+            client(t.clone(), super::super::classify::generic)
+                .with_write_lane(WriteLane::new(Duration::from_secs(1))),
+        );
         let started = Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
         for _ in 0..5 {
             let c = c.clone();
-            tasks.spawn(async move { c.call(Method::PATCH, "http://x/a", Some(&serde_json::json!({})), RequestOpts::default()).await.unwrap() });
+            tasks.spawn(async move {
+                c.call(
+                    Method::PATCH,
+                    "http://x/a",
+                    Some(&serde_json::json!({})),
+                    RequestOpts::default(),
+                )
+                .await
+                .unwrap()
+            });
         }
         while tasks.join_next().await.is_some() {}
         assert_eq!(max.load(Ordering::SeqCst), 1);
-        assert!(started.elapsed() >= Duration::from_secs(4), "five writes are spaced a second apart");
+        assert!(
+            started.elapsed() >= Duration::from_secs(4),
+            "five writes are spaced a second apart"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -469,7 +654,15 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(5)).await;
             c2.cancel();
         });
-        let err = c.call(Method::GET, "http://x/a", None::<&()>, RequestOpts::default()).await.unwrap_err();
+        let err = c
+            .call(
+                Method::GET,
+                "http://x/a",
+                None::<&()>,
+                RequestOpts::default(),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, ForgeError::Cancelled));
     }
 }

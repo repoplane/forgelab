@@ -23,7 +23,7 @@ pub struct Lock {
 }
 
 /// One repository as it is supposed to exist on a forge.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockRepo {
     pub name: String,
     pub default_branch: String,
@@ -32,7 +32,11 @@ pub struct LockRepo {
     pub topics: Vec<String>,
     pub archived: bool,
     pub empty: bool,
-    #[serde(default, deserialize_with = "null_as_empty", skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_as_empty",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub tags: Vec<String>,
     /// The seed commit. Empty for an empty repository.
     pub baseline: String,
@@ -48,7 +52,11 @@ where
 
 impl Lock {
     /// Resolves a spec into a lock. `baselines` maps repository name to seed commit SHA.
-    pub fn new(spec: &Spec, digest: &str, baselines: &std::collections::HashMap<String, String>) -> Lock {
+    pub fn new(
+        spec: &Spec,
+        digest: &str,
+        baselines: &std::collections::HashMap<String, String>,
+    ) -> Lock {
         Lock {
             version: SPEC_VERSION,
             fleet_digest: digest.to_string(),
@@ -108,7 +116,8 @@ impl Lock {
 /// Reads and parses a lock file. A missing file is reported so that callers can say "run
 /// apply" (see `FleetError::is_not_found`).
 pub fn read_lock(path: &Path) -> Result<Lock, FleetError> {
-    let raw = std::fs::read(path).map_err(|e| FleetError::io(format!("read {}", path.display()), e))?;
+    let raw =
+        std::fs::read(path).map_err(|e| FleetError::io(format!("read {}", path.display()), e))?;
     parse_lock(&raw)
 }
 
@@ -118,7 +127,8 @@ pub fn read_lock(path: &Path) -> Result<Lock, FleetError> {
 /// list, so an empty one would make every check run zero times and report success against a
 /// completely unseeded sandbox.
 pub fn parse_lock(raw: &[u8]) -> Result<Lock, FleetError> {
-    let l: Lock = serde_json::from_slice(raw).map_err(|e| FleetError::invalid(format!("parse lock: {e}")))?;
+    let l: Lock =
+        serde_json::from_slice(raw).map_err(|e| FleetError::invalid(format!("parse lock: {e}")))?;
     if l.version != SPEC_VERSION {
         return Err(FleetError::invalid(format!(
             "parse lock: version is {}, want {SPEC_VERSION}",
@@ -139,7 +149,12 @@ mod tests {
 
     #[test]
     fn rejects_empty() {
-        for raw in [r#"{"version":1,"repos":[]}"#, r#"{"version":1}"#, r#"{"version":1,"repos":["#, r#"{"version":2,"repos":[{}]}"#] {
+        for raw in [
+            r#"{"version":1,"repos":[]}"#,
+            r#"{"version":1}"#,
+            r#"{"version":1,"repos":["#,
+            r#"{"version":2,"repos":[{}]}"#,
+        ] {
             assert!(parse_lock(raw.as_bytes()).is_err(), "{raw}");
         }
     }
@@ -150,8 +165,26 @@ mod tests {
             version: 1,
             fleet_digest: "sha256:ab".into(),
             repos: vec![
-                LockRepo { name: "a".into(), default_branch: "main".into(), visibility: "private".into(), topics: vec![], archived: false, empty: true, tags: vec![], baseline: String::new() },
-                LockRepo { name: "b".into(), default_branch: "main".into(), visibility: "public".into(), topics: vec!["x".into()], archived: true, empty: false, tags: vec!["v1".into()], baseline: "deadbeef".into() },
+                LockRepo {
+                    name: "a".into(),
+                    default_branch: "main".into(),
+                    visibility: "private".into(),
+                    topics: vec![],
+                    archived: false,
+                    empty: true,
+                    tags: vec![],
+                    baseline: String::new(),
+                },
+                LockRepo {
+                    name: "b".into(),
+                    default_branch: "main".into(),
+                    visibility: "public".into(),
+                    topics: vec!["x".into()],
+                    archived: true,
+                    empty: false,
+                    tags: vec!["v1".into()],
+                    baseline: "deadbeef".into(),
+                },
             ],
         };
         let want = "{\n  \"version\": 1,\n  \"fleet_digest\": \"sha256:ab\",\n  \"repos\": [\n    {\n      \"name\": \"a\",\n      \"default_branch\": \"main\",\n      \"visibility\": \"private\",\n      \"topics\": [],\n      \"archived\": false,\n      \"empty\": true,\n      \"baseline\": \"\"\n    },\n    {\n      \"name\": \"b\",\n      \"default_branch\": \"main\",\n      \"visibility\": \"public\",\n      \"topics\": [\n        \"x\"\n      ],\n      \"archived\": true,\n      \"empty\": false,\n      \"tags\": [\n        \"v1\"\n      ],\n      \"baseline\": \"deadbeef\"\n    }\n  ]\n}\n";
@@ -166,7 +199,15 @@ mod tests {
         let lock = parse_lock(br#"{"version":1,"fleet_digest":"d","repos":[{"name":"a","default_branch":"main","visibility":"private","topics":null,"archived":false,"empty":true,"baseline":""}]}"#).unwrap();
         lock.write_file(&path).unwrap();
         assert_eq!(read_lock(&path).unwrap(), lock);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left behind");
-        assert!(read_lock(&dir.path().join("missing.json")).unwrap_err().is_not_found());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "no temp file left behind"
+        );
+        assert!(
+            read_lock(&dir.path().join("missing.json"))
+                .unwrap_err()
+                .is_not_found()
+        );
     }
 }

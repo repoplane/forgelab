@@ -91,7 +91,11 @@ pub enum ForgeError {
     Message(String),
     /// A JSON body that did not parse.
     #[error("{method} {path}: decode response: {message}")]
-    Decode { method: String, path: String, message: String },
+    Decode {
+        method: String,
+        path: String,
+        message: String,
+    },
     /// The run was interrupted.
     #[error("interrupted")]
     Cancelled,
@@ -108,7 +112,9 @@ impl ForgeError {
             ForgeError::Status { class, .. } => *class,
             ForgeError::RateLimitExceeded { .. } => Class::RateLimited,
             ForgeError::Transport { .. } => Class::Transient,
-            ForgeError::Message(_) | ForgeError::Decode { .. } | ForgeError::Cancelled => Class::Permanent,
+            ForgeError::Message(_) | ForgeError::Decode { .. } | ForgeError::Cancelled => {
+                Class::Permanent
+            }
         }
     }
 
@@ -132,5 +138,8 @@ impl ForgeError {
 
 /// The canonical reason phrase Go's `resp.Status` carried, for the error text.
 pub fn reason(status: u16) -> &'static str {
-    http::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or("")
+    http::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or("")
 }

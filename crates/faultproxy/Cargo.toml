@@ -15,9 +15,24 @@ name = "forgelab-faultproxy"
 path = "src/main.rs"
 
 [dependencies]
+forgelab = { path = "../forgelab" }
 tokio.workspace = true
+tokio-util = "0.7"
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 bytes.workspace = true
 http.workspace = true
+rand.workspace = true
+rand_chacha = "0.9"
+serde_yaml_ng = "0.10"
+async-trait = "0.1"
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1", "client-legacy"] }
+http-body-util = "0.1"
+url = "2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+reqwest = { version = "0.13", features = ["gzip"] }

@@ -1,0 +1,14 @@
+# S3: reads that lag writes. Azure DevOps answers a direct GET from a cache for about a
+# second after a create or delete; GitLab's empty_repo lags a push; Forgejo answers a branch
+# listing with null for a moment after a push.
+rules:
+  - name: stale-repo-after-write
+    match: { methods: [GET], path: "/api/v1/repos/*/*", scope: api }
+    stale: { after_mutation_on: same_repo, for_secs: 3, missing_as: not_found }
+  - name: null-branches-after-push
+    match: { methods: [GET], path: "/api/v1/repos/*/*/branches", scope: api }
+    stale: { after_mutation_on: git_receive_pack_same_repo, for_secs: 2, body: "null" }
+  - name: slow-refs
+    match: { path: "**/info/refs", scope: git }
+    when: { probability: 0.3 }
+    inject: { latency_ms: [100, 500] }

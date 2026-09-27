@@ -1,0 +1,15 @@
+# S2: the network and the forge under load. 5xx answers, dropped connections, and latency,
+# on API and git traffic alike.
+rules:
+  - name: flaky-5xx
+    match: { path: "/api/**", scope: api }
+    when: { probability: 0.05, max_per_path: 3 }
+    inject: { status: 503 }
+  - name: resets
+    match: { scope: any }
+    when: { probability: 0.01, max_per_path: 2 }
+    inject: { reset: true }
+  - name: slow
+    match: { scope: any }
+    when: { probability: 0.3 }
+    inject: { latency_ms: [50, 800] }

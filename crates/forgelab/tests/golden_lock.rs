@@ -22,7 +22,9 @@ async fn lock_bytes(root: &Path) -> Vec<u8> {
         let sem = sem.clone();
         tasks.spawn(async move {
             let _p = sem.acquire().await.unwrap();
-            let b = seed::build(&root, &r, &id).await.unwrap_or_else(|e| panic!("{}: {e}", r.name));
+            let b = seed::build(&root, &r, &id)
+                .await
+                .unwrap_or_else(|e| panic!("{}: {e}", r.name));
             (r.name, b.sha)
         });
     }
@@ -41,7 +43,11 @@ fn first_difference(a: &[u8], b: &[u8]) -> String {
             return format!("line {}:\n  got:  {x}\n  want: {y}", i + 1);
         }
     }
-    format!("lengths differ: got {} lines, want {}", a.lines().count(), b.lines().count())
+    format!(
+        "lengths differ: got {} lines, want {}",
+        a.lines().count(),
+        b.lines().count()
+    )
 }
 
 async fn check(root: &Path) {

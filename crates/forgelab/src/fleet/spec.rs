@@ -152,7 +152,8 @@ pub fn is_repo_name(s: &str) -> bool {
 /// is authoritative: an override for a repository that does not exist on disk is an error,
 /// because it is almost always a typo or a stale entry.
 pub fn load_spec(root: &Path) -> Result<Spec, FleetError> {
-    let raw = fs::read(root.join(SPEC_FILE)).map_err(|e| FleetError::io(format!("read {SPEC_FILE}"), e))?;
+    let raw = fs::read(root.join(SPEC_FILE))
+        .map_err(|e| FleetError::io(format!("read {SPEC_FILE}"), e))?;
     let ff: FleetFile = serde_yaml_ng::from_slice(&raw)
         .map_err(|e| FleetError::invalid(format!("parse {SPEC_FILE}: {e}")))?;
     if ff.version != SPEC_VERSION {
@@ -172,15 +173,20 @@ pub fn load_spec(root: &Path) -> Result<Spec, FleetError> {
                 "{SPEC_FILE}: git.timestamp is required and pins the commit clock"
             )));
         }
-        Some(s) => parse_timestamp(s)
-            .ok_or_else(|| FleetError::invalid(format!("{SPEC_FILE}: git.timestamp {s:?} is not an RFC 3339 time")))?,
+        Some(s) => parse_timestamp(s).ok_or_else(|| {
+            FleetError::invalid(format!(
+                "{SPEC_FILE}: git.timestamp {s:?} is not an RFC 3339 time"
+            ))
+        })?,
     };
     let default_branch = non_empty(&ff.defaults.default_branch, DEFAULT_BRANCH);
     let default_visibility = non_empty(&ff.defaults.visibility, VISIBILITY_PRIVATE);
 
     let mut repos = walk_repos(root)?;
     if repos.is_empty() {
-        return Err(FleetError::invalid(format!("no repositories found under {REPOS_DIR}/")));
+        return Err(FleetError::invalid(format!(
+            "no repositories found under {REPOS_DIR}/"
+        )));
     }
 
     let mut flat: HashMap<String, String> = HashMap::new();
@@ -259,7 +265,10 @@ pub fn load_spec(root: &Path) -> Result<Spec, FleetError> {
 
     Ok(Spec {
         version: ff.version,
-        git: GitIdentity { author: ff.git.author, timestamp },
+        git: GitIdentity {
+            author: ff.git.author,
+            timestamp,
+        },
         repos,
     })
 }
@@ -271,10 +280,16 @@ pub fn parse_timestamp(s: &str) -> Option<jiff::Timestamp> {
         return Some(ts);
     }
     if let Ok(dt) = s.parse::<jiff::civil::DateTime>() {
-        return dt.to_zoned(jiff::tz::TimeZone::UTC).ok().map(|z| z.timestamp());
+        return dt
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .ok()
+            .map(|z| z.timestamp());
     }
     if let Ok(d) = s.parse::<jiff::civil::Date>() {
-        return d.to_zoned(jiff::tz::TimeZone::UTC).ok().map(|z| z.timestamp());
+        return d
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .ok()
+            .map(|z| z.timestamp());
     }
     None
 }
@@ -308,14 +323,20 @@ pub fn check_refname(name: &str) -> Result<(), &'static str> {
             return Err("a component begins with '.' or ends with '.lock'");
         }
     }
-    if name.chars().any(|c| c.is_control() || c == ' ' || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')) {
+    if name.chars().any(|c| {
+        c.is_control() || c == ' ' || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+    }) {
         return Err("contains whitespace, a control character or one of ~ ^ : ? * [ \\");
     }
     Ok(())
 }
 
 fn non_empty(a: &str, b: &str) -> String {
-    if a.is_empty() { b.to_string() } else { a.to_string() }
+    if a.is_empty() {
+        b.to_string()
+    } else {
+        a.to_string()
+    }
 }
 
 /// Every repository under repos/, sorted by name. The tree says which directory is which: one
@@ -333,7 +354,7 @@ fn sorted_entries(path: &Path, label: &str) -> Result<Vec<fs::DirEntry>, FleetEr
     let mut entries = rd
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| FleetError::io(format!("read {label}/"), e))?;
-    entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    entries.sort_by_key(|a| a.file_name());
     Ok(entries)
 }
 
@@ -348,7 +369,9 @@ fn walk_dir(root: &Path, dir: &str) -> Result<Vec<Repo>, FleetError> {
         }
         let p = format!("{dir}/{name}");
         if !is_repo_name(&name) {
-            return Err(FleetError::invalid(format!("{p}: not a valid repository name")));
+            return Err(FleetError::invalid(format!(
+                "{p}: not a valid repository name"
+            )));
         }
         if holds_file(root, &p)? {
             out.push(Repo {
@@ -413,11 +436,14 @@ pub(crate) mod tests {
     }
 
     fn base(spec: &str) -> tempfile::TempDir {
-        fleet(spec, &[
-            ("repos/legacy/README.md", "# legacy\n"),
-            ("repos/plain/README.md", "# plain\n"),
-            ("repos/bare/.gitkeep", ""),
-        ])
+        fleet(
+            spec,
+            &[
+                ("repos/legacy/README.md", "# legacy\n"),
+                ("repos/plain/README.md", "# plain\n"),
+                ("repos/bare/.gitkeep", ""),
+            ],
+        )
     }
 
     fn add(dir: &tempfile::TempDir, p: &str, c: &str) {
@@ -450,16 +476,43 @@ pub(crate) mod tests {
     #[test]
     fn rejects() {
         let cases: Vec<(&str, String)> = vec![
-            ("no such directory", SPEC_YAML.replacen("legacy:", "legcy:", 1)),
-            ("version is 2", SPEC_YAML.replacen("version: 1", "version: 2", 1)),
-            ("visibility", format!("{SPEC_YAML}  plain: {{visibility: internal}}\n")),
-            ("no commit to tag", SPEC_YAML.replacen("{empty: true}", "{empty: true, tags: [v1]}", 1)),
+            (
+                "no such directory",
+                SPEC_YAML.replacen("legacy:", "legcy:", 1),
+            ),
+            (
+                "version is 2",
+                SPEC_YAML.replacen("version: 1", "version: 2", 1),
+            ),
+            (
+                "visibility",
+                format!("{SPEC_YAML}  plain: {{visibility: internal}}\n"),
+            ),
+            (
+                "no commit to tag",
+                SPEC_YAML.replacen("{empty: true}", "{empty: true, tags: [v1]}", 1),
+            ),
             // New in the port: typos are refused instead of ignored.
-            ("unknown field `default-branch`", SPEC_YAML.replacen("default_branch", "default-branch", 1)),
-            ("baseline tag", SPEC_YAML.replacen("legacy: {", "legacy: {tags: [forgelab-baseline], ", 1)),
-            ("not a valid git tag name", SPEC_YAML.replacen("legacy: {", "legacy: {tags: [\"a b\"], ", 1)),
-            ("git.timestamp is required", SPEC_YAML.replacen("  timestamp: \"2026-01-01T00:00:00Z\"\n", "", 1)),
-            ("git.author.name and git.author.email", SPEC_YAML.replacen("email: \"fixture@forgelab.test\"", "email: \"\"", 1)),
+            (
+                "unknown field `default-branch`",
+                SPEC_YAML.replacen("default_branch", "default-branch", 1),
+            ),
+            (
+                "baseline tag",
+                SPEC_YAML.replacen("legacy: {", "legacy: {tags: [forgelab-baseline], ", 1),
+            ),
+            (
+                "not a valid git tag name",
+                SPEC_YAML.replacen("legacy: {", "legacy: {tags: [\"a b\"], ", 1),
+            ),
+            (
+                "git.timestamp is required",
+                SPEC_YAML.replacen("  timestamp: \"2026-01-01T00:00:00Z\"\n", "", 1),
+            ),
+            (
+                "git.author.name and git.author.email",
+                SPEC_YAML.replacen("email: \"fixture@forgelab.test\"", "email: \"\"", 1),
+            ),
         ];
         for (want, yaml) in cases {
             let dir = base(&yaml);
@@ -487,17 +540,37 @@ pub(crate) mod tests {
     /// one that holds only directories is a namespace.
     #[test]
     fn walks_namespaces() {
-        let dir = base(&format!("{SPEC_YAML}  platform/core/api: {{topics: [service]}}\n"));
+        let dir = base(&format!(
+            "{SPEC_YAML}  platform/core/api: {{topics: [service]}}\n"
+        ));
         add(&dir, "repos/platform/core/api/README.md", "# api\n");
-        add(&dir, "repos/platform/core/api/src/main.go", "package main\n");
+        add(
+            &dir,
+            "repos/platform/core/api/src/main.go",
+            "package main\n",
+        );
         add(&dir, "repos/platform/tooling/run.sh", "#!/bin/sh\n");
         add(&dir, "repos/payments/api/.gitkeep", "");
         add(&dir, "repos/payments/.DS_Store", "junk");
 
         let spec = load_spec(dir.path()).unwrap();
         let names: Vec<&str> = spec.repos.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["bare", "legacy", "payments/api", "plain", "platform/core/api", "platform/tooling"]);
-        let api = spec.repos.iter().find(|r| r.name == "platform/core/api").unwrap();
+        assert_eq!(
+            names,
+            [
+                "bare",
+                "legacy",
+                "payments/api",
+                "plain",
+                "platform/core/api",
+                "platform/tooling"
+            ]
+        );
+        let api = spec
+            .repos
+            .iter()
+            .find(|r| r.name == "platform/core/api")
+            .unwrap();
         assert_eq!(api.dir, "repos/platform/core/api");
         assert_eq!(api.topics.len(), 1);
         assert_eq!(spec.namespaces(), ["payments", "platform", "platform/core"]);
@@ -512,8 +585,14 @@ pub(crate) mod tests {
     fn rejects_trees() {
         let cases: &[(&str, &[&str])] = &[
             ("no repository is under it", &["repos/hollow/.hidden/x"]),
-            ("both \"a-b-c\"", &["repos/a-b/c/README.md", "repos/a/b-c/README.md"]),
-            ("both \"x-y-z\"", &["repos/X-y/z/README.md", "repos/x/y-z/README.md"]),
+            (
+                "both \"a-b-c\"",
+                &["repos/a-b/c/README.md", "repos/a/b-c/README.md"],
+            ),
+            (
+                "both \"x-y-z\"",
+                &["repos/X-y/z/README.md", "repos/x/y-z/README.md"],
+            ),
             ("not a valid", &["repos/team one/api/README.md"]),
         ];
         for (want, extra) in cases {
@@ -533,7 +612,9 @@ pub(crate) mod tests {
         for ok in ["v1", "release/1.2", "feature-x", "a.b"] {
             assert!(check_refname(ok).is_ok(), "{ok}");
         }
-        for bad in ["", "-x", "a..b", "a b", "x.lock", ".hidden", "a//b", "/a", "a/", "a~b", "@", "a@{b"] {
+        for bad in [
+            "", "-x", "a..b", "a b", "x.lock", ".hidden", "a//b", "/a", "a/", "a~b", "@", "a@{b",
+        ] {
             assert!(check_refname(bad).is_err(), "{bad}");
         }
     }

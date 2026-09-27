@@ -5,6 +5,7 @@
 //! lock, `seed` drives git, `forge` is the small surface forgelab needs from a forge with one
 //! client per forge, and `sandbox` implements the commands over them.
 
+pub mod completion;
 pub mod fleet;
 pub mod forge;
 pub mod sandbox;

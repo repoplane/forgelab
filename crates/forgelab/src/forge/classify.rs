@@ -17,12 +17,22 @@ pub struct Classified {
 pub type Classifier = fn(&http::Response<Bytes>) -> Classified;
 
 fn plain(class: Class) -> Classified {
-    Classified { class, retry_after: None }
+    Classified {
+        class,
+        retry_after: None,
+    }
 }
 
 /// `Retry-After` in seconds, plus one so that a request is never sent a hair too early.
 fn retry_after(resp: &http::Response<Bytes>) -> Option<Duration> {
-    let s = resp.headers().get("retry-after")?.to_str().ok()?.trim().parse::<u64>().ok()?;
+    let s = resp
+        .headers()
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
     Some(Duration::from_secs(s + 1))
 }
 
@@ -30,7 +40,14 @@ fn retry_after(resp: &http::Response<Bytes>) -> Option<Duration> {
 pub fn generic(resp: &http::Response<Bytes>) -> Classified {
     let status = resp.status().as_u16();
     let class = Class::of_status(status);
-    Classified { class, retry_after: if class == Class::RateLimited { retry_after(resp) } else { None } }
+    Classified {
+        class,
+        retry_after: if class == Class::RateLimited {
+            retry_after(resp)
+        } else {
+            None
+        },
+    }
 }
 
 /// Forgejo: nothing beyond the status code, except that a `Retry-After` on a 503 is a pause
@@ -40,7 +57,10 @@ pub fn forgejo(resp: &http::Response<Bytes>) -> Classified {
     if resp.status().as_u16() == 503
         && let Some(wait) = retry_after(resp)
     {
-        return Classified { class: Class::RateLimited, retry_after: Some(wait) };
+        return Classified {
+            class: Class::RateLimited,
+            retry_after: Some(wait),
+        };
     }
     c
 }
@@ -67,21 +87,44 @@ pub fn github(resp: &http::Response<Bytes>) -> Classified {
         return generic(resp);
     }
     if let Some(wait) = retry_after(resp) {
-        return Classified { class: Class::RateLimited, retry_after: Some(wait) };
+        return Classified {
+            class: Class::RateLimited,
+            retry_after: Some(wait),
+        };
     }
-    if resp.headers().get("x-ratelimit-remaining").and_then(|v| v.to_str().ok()) == Some("0")
-        && let Some(reset) = resp.headers().get("x-ratelimit-reset").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<i64>().ok())
+    if resp
+        .headers()
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        == Some("0")
+        && let Some(reset) = resp
+            .headers()
+            .get("x-ratelimit-reset")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<i64>().ok())
     {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         let wait = Duration::from_secs((reset - now).max(1) as u64);
-        return Classified { class: Class::RateLimited, retry_after: Some(wait) };
+        return Classified {
+            class: Class::RateLimited,
+            retry_after: Some(wait),
+        };
     }
     let body = String::from_utf8_lossy(resp.body()).to_lowercase();
     if body.contains(SECONDARY_LIMIT) {
-        return Classified { class: Class::RateLimited, retry_after: Some(GITHUB_SECONDARY_WAIT) };
+        return Classified {
+            class: Class::RateLimited,
+            retry_after: Some(GITHUB_SECONDARY_WAIT),
+        };
     }
     if status == 429 {
-        return Classified { class: Class::RateLimited, retry_after: Some(Duration::from_secs(60)) };
+        return Classified {
+            class: Class::RateLimited,
+            retry_after: Some(Duration::from_secs(60)),
+        };
     }
     plain(Class::Forbidden)
 }
@@ -114,15 +157,40 @@ mod tests {
     #[test]
     fn github_limits() {
         let c = github(&resp(403, &[("Retry-After", "5")], ""));
-        assert_eq!(c, Classified { class: Class::RateLimited, retry_after: Some(Duration::from_secs(6)) });
-        let c = github(&resp(403, &[("X-RateLimit-Remaining", "4264")], r#"{"message":"You have exceeded a secondary rate limit."}"#));
+        assert_eq!(
+            c,
+            Classified {
+                class: Class::RateLimited,
+                retry_after: Some(Duration::from_secs(6))
+            }
+        );
+        let c = github(&resp(
+            403,
+            &[("X-RateLimit-Remaining", "4264")],
+            r#"{"message":"You have exceeded a secondary rate limit."}"#,
+        ));
         assert_eq!(c.class, Class::RateLimited);
         assert_eq!(c.retry_after, Some(GITHUB_SECONDARY_WAIT));
-        assert_eq!(github(&resp(403, &[], r#"{"message":"Must have admin rights"}"#)).class, Class::Forbidden);
+        assert_eq!(
+            github(&resp(403, &[], r#"{"message":"Must have admin rights"}"#)).class,
+            Class::Forbidden
+        );
         assert_eq!(github(&resp(429, &[], "")).class, Class::RateLimited);
         assert_eq!(github(&resp(404, &[], "")).class, Class::NotFound);
-        let reset = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 2400).to_string();
-        let c = github(&resp(403, &[("X-RateLimit-Remaining", "0"), ("X-RateLimit-Reset", &reset)], ""));
+        let reset = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 2400)
+            .to_string();
+        let c = github(&resp(
+            403,
+            &[
+                ("X-RateLimit-Remaining", "0"),
+                ("X-RateLimit-Reset", &reset),
+            ],
+            "",
+        ));
         assert_eq!(c.class, Class::RateLimited);
         assert!(c.retry_after.unwrap() > Duration::from_secs(2300));
     }
@@ -130,12 +198,18 @@ mod tests {
     #[test]
     fn azure_sign_in_page_is_auth() {
         assert_eq!(azuredevops(&resp(203, &[], "<html>")).class, Class::Auth);
-        assert_eq!(azuredevops(&resp(429, &[("Retry-After", "1")], "")).retry_after, Some(Duration::from_secs(2)));
+        assert_eq!(
+            azuredevops(&resp(429, &[("Retry-After", "1")], "")).retry_after,
+            Some(Duration::from_secs(2))
+        );
     }
 
     #[test]
     fn forgejo_503_with_retry_after_is_a_pause() {
-        assert_eq!(forgejo(&resp(503, &[("Retry-After", "3")], "")).class, Class::RateLimited);
+        assert_eq!(
+            forgejo(&resp(503, &[("Retry-After", "3")], "")).class,
+            Class::RateLimited
+        );
         assert_eq!(forgejo(&resp(503, &[], "")).class, Class::Transient);
     }
 }
