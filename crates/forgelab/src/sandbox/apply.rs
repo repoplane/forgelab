@@ -373,6 +373,33 @@ impl Env {
         Ok(())
     }
 
+    /// Waits until a repository just created answers. GitLab has answered a create with
+    /// success and then 404 to the next few calls on the project -- the push, the branch
+    /// protection -- for three projects of a hundred and eight in a subgroup made a moment
+    /// before. Everything after a create assumes the repository is there, so it is waited for
+    /// here, once, rather than in every step that follows.
+    async fn wait_created(&self, name: &str) -> Result<(), CommandError> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+        let mut pause = std::time::Duration::from_millis(200);
+        loop {
+            if self.forge.get(name).await?.is_some() {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(CommandError::Other(format!(
+                    "{name} was created but does not answer after {}",
+                    crate::util::go_duration(std::time::Duration::from_secs(90))
+                )));
+            }
+            tracing::debug!(name, "created, not answering yet");
+            tokio::select! {
+                _ = tokio::time::sleep(pause) => {}
+                _ = self.cancel.cancelled() => return Err(CommandError::Other("interrupted".into())),
+            }
+            pause = (pause * 2).min(std::time::Duration::from_secs(3));
+        }
+    }
+
     /// Creates a repository, and does not take the forge's first word for a failure that
     /// may not be one:
     ///
@@ -399,7 +426,7 @@ impl Env {
                 .create(name, visibility, default_branch, topics)
                 .await
             {
-                Ok(()) => return Ok(()),
+                Ok(()) => return self.wait_created(name).await,
                 Err(e) => e,
             };
             match err.class() {

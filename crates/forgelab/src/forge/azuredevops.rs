@@ -41,6 +41,10 @@ pub struct Client {
     /// Remembers project ids by name. Making a project runs once however many repositories
     /// need it at the same time, and workers in other projects do not wait for it.
     projects: KeyedOnce<String, ProjectInfo>,
+    /// Project creations go one at a time. The organisation builds each one in the background,
+    /// and several requested at once can fail with no reason given -- which is what the first
+    /// apply of a fleet with three namespaces did.
+    creating: tokio::sync::Mutex<()>,
     cancel: CancellationToken,
 }
 
@@ -74,6 +78,8 @@ struct Operation {
     status: String,
     #[serde(default, rename = "resultMessage")]
     result_message: String,
+    #[serde(default, rename = "detailedMessage")]
+    detailed_message: String,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +137,7 @@ impl Client {
             token,
             http,
             projects: KeyedOnce::default(),
+            creating: tokio::sync::Mutex::new(()),
             cancel,
         })
     }
@@ -275,7 +282,7 @@ impl Client {
                 if let Some(id) = self.fetch_project_id(project).await? {
                     return Ok(ProjectInfo { id, born: false });
                 }
-                self.create_project(project)
+                self.create_project_retried(project)
                     .await
                     .map_err(|e| ForgeError::msg(format!("create project {project}: {e}")))?;
                 match self.fetch_project_id(project).await? {
@@ -287,6 +294,34 @@ impl Client {
             })
             .await?;
         Ok(Some(p))
+    }
+
+    /// Makes a project, one at a time across the client, and tries again when the background
+    /// operation fails: that failure has come with no reason and gone away on the next try.
+    /// Before each new try the project is looked up, since a failed operation may still have
+    /// left it behind.
+    async fn create_project_retried(&self, project: &str) -> Result<(), ForgeError> {
+        let _one_at_a_time = self.creating.lock().await;
+        let mut wait = Duration::from_secs(5);
+        for attempt in 1..=3 {
+            match self.create_project(project).await {
+                Ok(()) => return Ok(()),
+                Err(e) if attempt < 3 && e.to_string().starts_with("operation failed") => {
+                    tracing::debug!(
+                        project,
+                        attempt,
+                        "project creation failed, trying again: {e}"
+                    );
+                    self.sleep(wait).await?;
+                    wait *= 2;
+                    if self.fetch_project_id(project).await?.is_some() {
+                        return Ok(());
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("the loop returns on the last attempt")
     }
 
     /// Makes a private Git project on the organisation's default process, and waits for it:
@@ -359,10 +394,17 @@ impl Client {
             match op.status.as_str() {
                 "succeeded" => return Ok(()),
                 "failed" | "cancelled" => {
-                    return Err(ForgeError::msg(format!(
-                        "operation {}: {}",
-                        op.status, op.result_message
-                    )));
+                    let why = [op.result_message.trim(), op.detailed_message.trim()]
+                        .into_iter()
+                        .filter(|m| !m.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(": ");
+                    let why = if why.is_empty() {
+                        "Azure DevOps gave no reason".to_string()
+                    } else {
+                        why
+                    };
+                    return Err(ForgeError::msg(format!("operation {}: {why}", op.status)));
                 }
                 _ => {}
             }
@@ -1214,6 +1256,66 @@ mod tests {
         // sandbox/x and x would be the same repository
         let err = c.get("Sandbox/x").await.unwrap_err();
         assert!(err.to_string().contains("own project"), "{err}");
+    }
+
+    /// A project operation that fails without a reason is tried again, and the reason, when
+    /// Azure DevOps gives one, is reported. Seen for real: three projects requested at once,
+    /// one of them failed with an empty result message.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_project_operation_is_tried_again() {
+        let posts = Arc::new(AtomicUsize::new(0));
+        let p2 = posts.clone();
+        let (c, _t) = serve(Box::new(move |r| {
+            let made = p2.load(Ordering::SeqCst);
+            match (r.method().as_str(), r.uri().path()) {
+                ("POST", "/acme/_apis/projects") => {
+                    let n = p2.fetch_add(1, Ordering::SeqCst) + 1;
+                    reply(200, &format!(r#"{{"id":"op{n}","status":"queued"}}"#))
+                }
+                ("POST", _) => reply(201, "{}"),
+                ("GET", "/acme/_apis/projects/services") if made < 2 => reply(404, ""),
+                ("GET", "/acme/_apis/projects/services") => reply(200, r#"{"id":"p1"}"#),
+                ("GET", "/acme/_apis/process/processes") => {
+                    reply(200, r#"{"value":[{"id":"agile","isDefault":true}]}"#)
+                }
+                ("GET", "/acme/_apis/operations/op1") => {
+                    reply(200, r#"{"id":"op1","status":"failed","resultMessage":""}"#)
+                }
+                ("GET", "/acme/_apis/operations/op2") => {
+                    reply(200, r#"{"id":"op2","status":"succeeded"}"#)
+                }
+                (m, p) => panic!("unexpected {m} {p}"),
+            }
+        }));
+        c.create("services/api", "", "", &[]).await.unwrap();
+        assert_eq!(
+            posts.load(Ordering::SeqCst),
+            2,
+            "the failed operation is tried once more"
+        );
+
+        // Three failures in a row are reported, with Azure DevOps' own words when it has any.
+        let (c, _t) = serve(Box::new(|r| match (r.method().as_str(), r.uri().path()) {
+            ("POST", "/acme/_apis/projects") => reply(200, r#"{"id":"op9","status":"queued"}"#),
+            ("GET", "/acme/_apis/projects/services") => reply(404, ""),
+            ("GET", "/acme/_apis/process/processes") => {
+                reply(200, r#"{"value":[{"id":"agile","isDefault":true}]}"#)
+            }
+            ("GET", "/acme/_apis/operations/op9") => reply(
+                200,
+                r#"{"id":"op9","status":"failed","resultMessage":"","detailedMessage":"TF200019: name in use"}"#,
+            ),
+            (m, p) => panic!("unexpected {m} {p}"),
+        }));
+        let err = c
+            .create("services/api", "", "", &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("operation failed: TF200019: name in use"),
+            "{err}"
+        );
     }
 
     /// Eight repositories in one new project make it once, and none of them waits on a lock
