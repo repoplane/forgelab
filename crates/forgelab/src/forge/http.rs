@@ -388,7 +388,9 @@ impl HttpClient {
             };
 
             let status = resp.status().as_u16();
-            if (200..300).contains(&status) {
+            // A classifier may veto a 2xx: Azure DevOps answers a bad token with a 203 and a
+            // sign-in page, which is not success.
+            if (200..300).contains(&status) && (self.classify)(&resp).class != Class::Auth {
                 let (parts, body) = resp.into_parts();
                 return Ok(Answer {
                     status,

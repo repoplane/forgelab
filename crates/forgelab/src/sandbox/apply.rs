@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::fleet::{self, Lock};
-use crate::forge::{self, Settings};
+use crate::forge::{self, ForgeError, Settings};
 use crate::seed::{self, Built};
 use crate::util::go_slice;
 
@@ -278,15 +278,14 @@ impl Env {
         if c.create {
             // The marker goes on with the creation, before any content: an interrupted apply
             // leaves repositories behind, and the re-run has to recognise them as its own.
-            self.forge
-                .create(
-                    name,
-                    &want.visibility,
-                    &want.default_branch,
-                    &with_marker(&want.topics, marker),
-                )
-                .await
-                .map_err(|e| CommandError::Other(format!("create: {e}")))?;
+            self.create_verified(
+                name,
+                &want.visibility,
+                &want.default_branch,
+                &with_marker(&want.topics, marker),
+            )
+            .await
+            .map_err(|e| CommandError::Other(format!("create: {e}")))?;
         }
 
         // An archived repository rejects every write, so it is lifted for the duration and
@@ -369,6 +368,50 @@ impl Env {
                 .map_err(|e| CommandError::Other(format!("archive: {e}")))?;
         }
         Ok(())
+    }
+
+    /// Creates a repository, and when the forge answered a create with a transient failure --
+    /// a 5xx, a dropped connection -- asks it whether the repository is there before trying
+    /// again. A create is not idempotent, so it is never repeated blindly; but a 503 from a
+    /// forge under load, which is what a fleet of a hundred provokes, must not strand the
+    /// apply either. One that did land is finished the way `Forge::create` would have: with
+    /// its topics set, so the marker is on it.
+    async fn create_verified(
+        &self,
+        name: &str,
+        visibility: &str,
+        default_branch: &str,
+        topics: &[String],
+    ) -> Result<(), ForgeError> {
+        let mut wait = std::time::Duration::from_secs(1);
+        for attempt in 1..=5 {
+            match self
+                .forge
+                .create(name, visibility, default_branch, topics)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) if e.class() == forge::Class::Transient && attempt < 5 => {
+                    tracing::debug!(
+                        name,
+                        attempt,
+                        "create answered a transient failure, checking whether it landed: {e}"
+                    );
+                    match self.forge.get(name).await? {
+                        Some(_) => return self.forge.set_topics(name, topics).await,
+                        None => {
+                            tokio::select! {
+                                _ = tokio::time::sleep(wait) => {}
+                                _ = self.cancel.cancelled() => return Err(ForgeError::Cancelled),
+                            }
+                            wait *= 2;
+                        }
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("the loop returns on the last attempt")
     }
 
     fn print_plan(&self, verb: &str, changes: &[Change]) {

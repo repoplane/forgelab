@@ -3,9 +3,9 @@
 rules:
   - name: gh-secondary
     match: { methods: [POST, PATCH, PUT, DELETE], path: "/api/**", scope: api }
-    when: { probability: 0.03, max_per_path: 3 }
+    when: { probability: 0.03, max_total: 2 }
     inject:
-      status: 403
+      status: 429
       headers: { X-RateLimit-Remaining: "4264" }
       body: '{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits"}'
   - name: 429-bare
