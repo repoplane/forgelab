@@ -332,21 +332,46 @@ impl Env {
             self.push_seed(b, &remote, name, c.create).await?;
         }
 
-        // Archived goes last, on its own: once set, nothing else can be.
-        let mut settings = Settings {
-            visibility: Some(want.visibility.clone()),
-            ..Settings::default()
+        // Only what differs is written. Writes are what a forge rate-limits -- GitHub paces
+        // them a second apart -- while reads are cheap, so a repository just created and seeded
+        // is read back rather than written blindly: its visibility came with the create and its
+        // default branch with the first push, and on GitHub that saves one paced write in three.
+        let caps = self.forge.caps();
+        let current = if c.create {
+            self.forge.get(name).await.ok().flatten()
+        } else {
+            c.live.clone()
         };
-        if !want.empty {
-            // A repository created empty adopts the instance default branch, so a fixture that
-            // wants `master` needs it set after the push has created the ref.
+        let mut settings = Settings::default();
+        if caps.visibility
+            && current
+                .as_ref()
+                .is_none_or(|l| l.visibility != want.visibility)
+        {
+            settings.visibility = Some(want.visibility.clone());
+        }
+        // A repository created empty adopts the instance default branch, so a fixture that
+        // wants `master` needs it set after the push has created the ref.
+        if !want.empty
+            && current
+                .as_ref()
+                .is_none_or(|l| l.default_branch != want.default_branch)
+        {
             settings.default_branch = Some(want.default_branch.clone());
         }
-        self.forge
-            .update_settings(name, settings)
-            .await
-            .map_err(|e| CommandError::Other(format!("settings: {e}")))?;
-        if !c.create {
+        if settings != Settings::default() {
+            self.forge
+                .update_settings(name, settings)
+                .await
+                .map_err(|e| CommandError::Other(format!("settings: {e}")))?;
+        }
+        // Topics went on with the create. Otherwise they are set when they differ, the marker
+        // included.
+        let topics_differ = current.as_ref().is_none_or(|l| {
+            !l.topics.iter().any(|t| t == marker)
+                || without_marker(&l.topics, marker) != want.topics
+        });
+        if !c.create && caps.topics && topics_differ {
             self.forge
                 .set_topics(name, &with_marker(&want.topics, marker))
                 .await

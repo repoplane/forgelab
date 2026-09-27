@@ -66,6 +66,13 @@ impl Client {
         Ok(Self::with_api(api, base, org, token, transport, cancel))
     }
 
+    /// Spaces writes this far apart instead of GitHub's documented one second. Shorter is
+    /// faster and nearer the secondary rate limit; zero keeps writes serial but unpaced.
+    pub fn with_write_interval(mut self, interval: Duration) -> Client {
+        self.http = self.http.with_write_lane(WriteLane::new(interval));
+        self
+    }
+
     fn with_api(
         api_url: String,
         git_url: String,

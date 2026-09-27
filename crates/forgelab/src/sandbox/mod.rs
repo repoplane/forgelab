@@ -126,10 +126,20 @@ impl Env {
                 )
                 .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?,
             ),
-            "github" => Arc::new(
-                forge::github::Client::new(&sb.base_url, &sb.org, token, transport, cancel.clone())
-                    .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?,
-            ),
+            "github" => {
+                let mut c = forge::github::Client::new(
+                    &sb.base_url,
+                    &sb.org,
+                    token,
+                    transport,
+                    cancel.clone(),
+                )
+                .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?;
+                if let Some(w) = sb.write_interval {
+                    c = c.with_write_interval(std::time::Duration::from_secs_f64(w));
+                }
+                Arc::new(c)
+            }
             "gitlab" => Arc::new(
                 forge::gitlab::Client::new(&sb.base_url, &sb.org, token, transport, cancel.clone())
                     .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?,

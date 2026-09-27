@@ -35,7 +35,7 @@ pub struct Config {
 
 /// One forge organisation. Credentials are descriptors, never values: the file names an
 /// environment variable, so nothing secret is committed or passed as an argument.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Sandbox {
     #[serde(skip)]
@@ -62,6 +62,10 @@ pub struct Sandbox {
     /// How many repositories to work on at once; the forge's own default when absent.
     #[serde(default)]
     pub concurrency: Option<usize>,
+    /// GitHub only: seconds between two writes. GitHub documents one second for bulk
+    /// mutations, which is the default; shorter is faster and nearer its secondary limit.
+    #[serde(default)]
+    pub write_interval: Option<f64>,
 }
 
 /// What a sandbox may be called. The names are typed on a command line and offered by shell
@@ -206,6 +210,19 @@ impl Config {
                 )));
             }
         }
+        if let Some(w) = sb.write_interval {
+            if sb.forge != "github" {
+                return Err(CommandError::Other(format!(
+                    "sandbox {name:?}: write_interval only exists on github, not on {}",
+                    sb.forge
+                )));
+            }
+            if !(0.0..=60.0).contains(&w) {
+                return Err(CommandError::Other(format!(
+                    "sandbox {name:?}: write_interval {w} is not between 0 and 60 seconds"
+                )));
+            }
+        }
         if sb.concurrency == Some(0) {
             return Err(CommandError::Other(format!(
                 "sandbox {name:?}: concurrency must be at least 1"
@@ -235,6 +252,9 @@ sandboxes:
   upper:   {forge: github,      org: acme-sandbox, token_env: T, marker_topic: \" Forgelab-Managed \"}
   badmark: {forge: github,      org: acme-sandbox, token_env: T, marker_topic: \"a b\"}
   paced:   {forge: github,      org: acme-sandbox, token_env: T, concurrency: 2}
+  quick:   {forge: github,      org: acme-sandbox, token_env: T, write_interval: 0.5}
+  glquick: {forge: gitlab,      org: acme-sandbox, token_env: T, write_interval: 0.5}
+  tooslow: {forge: github,      org: acme-sandbox, token_env: T, write_interval: 120}
 ";
 
     #[test]
@@ -265,8 +285,10 @@ sandboxes:
         // A left-over org_allowlist no longer refuses anything, but is still parsed.
         assert!(!cfg.org_allowlist.is_empty());
 
+        assert_eq!(cfg.sandbox("quick").unwrap().write_interval, Some(0.5));
         for name in [
-            "nourl", "badurl", "partial", "noproj", "ghproj", "nope", "badmark",
+            "nourl", "badurl", "partial", "noproj", "ghproj", "nope", "badmark", "glquick",
+            "tooslow",
         ] {
             assert!(cfg.sandbox(name).is_err(), "{name}: want an error");
         }
