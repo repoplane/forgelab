@@ -154,7 +154,7 @@ with `-`:
 `sandboxes.yaml` says where it goes. The org is only reachable through here — there is no
 `--org` flag to mistype. `token_env` names an environment variable; the file never holds a
 secret. `concurrency` is optional and overrides the forge's own default (Forgejo 8, GitHub 6,
-GitLab 4, Azure DevOps 4):
+GitLab 8, Azure DevOps 8):
 
 ```yaml
 version: 1

@@ -620,7 +620,7 @@ impl Forge for Client {
 
     fn policy(&self) -> ForgePolicy {
         ForgePolicy {
-            default_concurrency: 4,
+            default_concurrency: 8,
             namespace_gone_timeout: Duration::from_secs(300),
         }
     }
