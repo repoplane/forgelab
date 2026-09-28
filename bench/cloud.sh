@@ -15,7 +15,10 @@ set -uo pipefail
 L=${1:?log directory}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 FLEETS=${FORGELAB_FLEETS_DIR:-$HERE/../fleets}
-GO_BIN=${GO_BIN:-$HERE/../forgelab/bin/forgelab}
+# The Go implementation to compare with. This repository no longer builds one, so name it:
+#   git worktree add /tmp/forgelab-go v0.12.0 && (cd /tmp/forgelab-go && go build -o forgelab ./cmd/forgelab)
+#   GO_BIN=/tmp/forgelab-go/forgelab bench/…
+GO_BIN=${GO_BIN:?set GO_BIN to a Go build of v0.12.0; see the comment above}
 RS_BIN=${RS_BIN:-$HERE/target/release/forgelab}
 MAX_RERUNS=${MAX_RERUNS:-5}
 GH_COOLDOWN=${GH_COOLDOWN:-5400}   # seconds between two GitHub applies of 108 repositories

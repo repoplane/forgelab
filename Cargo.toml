@@ -3,10 +3,10 @@ resolver = "3"
 members = ["crates/forgelab", "crates/faultproxy"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.13.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/repoplane/forgelab-rs"
+repository = "https://github.com/repoplane/forgelab"
 rust-version = "1.93"
 
 [workspace.dependencies]

@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/repoplane/forgelab-rs/actions/workflows/ci.yml"><img src="https://github.com/repoplane/forgelab-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/repoplane/forgelab-rs/releases/latest"><img src="https://img.shields.io/github/v/release/repoplane/forgelab-rs?sort=semver" alt="Release"></a>
+  <a href="https://github.com/repoplane/forgelab/actions/workflows/ci.yml"><img src="https://github.com/repoplane/forgelab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/repoplane/forgelab/releases/latest"><img src="https://img.shields.io/github/v/release/repoplane/forgelab?sort=semver" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
@@ -23,9 +23,9 @@ to be there.**
 |---|:---:|:---:|:---:|:---:|
 | Supported | ✅ | ✅ | ✅ | ✅ |
 
-This is the Rust implementation. It is a drop-in for the Go one: the same commands, flags, exit
-codes, `fleet.yaml`, `sandboxes.yaml` and a byte-identical `fleet.lock.json`. What changed is
-[below](#-what-changed-from-the-go-implementation).
+Since v0.13.0 ForgeLab is written in Rust. It is a drop-in for the Go releases up to v0.12.0: the
+same commands, flags, exit codes, `fleet.yaml`, `sandboxes.yaml` and a byte-identical
+`fleet.lock.json`. What changed is [below](#-what-changed-in-v0130-the-rust-rewrite).
 
 ## ⚡ What it looks like
 
@@ -74,7 +74,7 @@ A prebuilt binary, for Linux and macOS on x86_64 and arm64, into your own `~/.lo
 
 ```sh
 mkdir -p ~/.local/bin
-curl -fsSL "https://github.com/repoplane/forgelab-rs/releases/latest/download/forgelab_$(uname -s)_$(uname -m).tar.gz" \
+curl -fsSL "https://github.com/repoplane/forgelab/releases/latest/download/forgelab_$(uname -s)_$(uname -m).tar.gz" \
   | tar -xz -C ~/.local/bin forgelab
 ```
 
@@ -83,7 +83,7 @@ To pin a version, as CI should, replace `latest/download` with `download/v0.1.0`
 Or build it from source with Rust 1.93 or newer:
 
 ```sh
-cargo install --git https://github.com/repoplane/forgelab-rs forgelab
+cargo install --git https://github.com/repoplane/forgelab forgelab
 ```
 
 ForgeLab needs `git` 2.31 or newer on the `PATH` at run time.
@@ -182,8 +182,9 @@ sandboxes:
 
 The tokens, the per-forge caveats (a GitLab project cannot be more visible than its group; an
 Azure DevOps repository has no topics and no visibility of its own, and `archived` there means
-`disabled`) and the safety model are exactly those of the Go implementation; its
-[README](https://github.com/repoplane/forgelab#readme) remains the reference for them.
+`disabled`) and the safety model are unchanged since the Go releases; the
+[v0.12.0 README](https://github.com/repoplane/forgelab/tree/v0.12.0#readme) remains the reference
+for them.
 
 ## 🧭 How it behaves
 
@@ -192,8 +193,7 @@ org. Anything else in there is invisible to it — never compared, reported or t
 
 **🎯 Deterministic.** Content is pushed with git under a pinned author and clock, so commit SHAs
 are identical on every machine and every forge. `fleet.lock.json` is byte-stable, and identical
-to the one the Go implementation writes: the committed locks of `repoplane/fleets` are the
-test.
+to the one the Go releases wrote: the committed locks of `repoplane/fleets` are the test.
 
 **🪶 `reset` is cheap and narrow.** It writes only to repositories that drifted, moves refs without
 transferring objects, and *cannot* create or delete a repository — a missing one is exit 2.
@@ -211,9 +211,10 @@ scoped to the forge's origin.
 | `1` | **drift** — commits, branches, tags, open pull requests, settings | `reset`, retry once |
 | `2` | **guard failure** or error — repo missing, not ForgeLab's, baseline or fleet changed, a forge that would not answer | stop, look |
 
-## 🔁 What changed from the Go implementation
+## 🔁 What changed in v0.13.0, the Rust rewrite
 
-Behaviour that is different on purpose. Everything else, output lines included, is the same.
+Behaviour that is different on purpose from the Go releases. Everything else, output lines
+included, is the same.
 
 - **Every failure is reported.** A run over a hundred repositories names each one that failed
   and why, not the first it happened to notice. Guard failures still win: nothing is retried
