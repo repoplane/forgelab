@@ -5,18 +5,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/repoplane/forgelab/actions/workflows/ci.yml"><img src="https://github.com/repoplane/forgelab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/repoplane/forgelab/releases/latest"><img src="https://img.shields.io/github/v/release/repoplane/forgelab?sort=semver" alt="Release"></a>
-  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/repoplane/forgelab" alt="Go version"></a>
+  <a href="https://github.com/repoplane/forgelab-rs/actions/workflows/ci.yml"><img src="https://github.com/repoplane/forgelab-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/repoplane/forgelab-rs/releases/latest"><img src="https://img.shields.io/github/v/release/repoplane/forgelab-rs?sort=semver" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-</p>
-
-<p align="center">
-  <a href="#-install">Install</a> &bull;
-  <a href="#-try-it-in-two-minutes">Try it</a> &bull;
-  <a href="#-a-fleet">A fleet</a> &bull;
-  <a href="#-how-it-behaves">How it behaves</a> &bull;
-  <a href="examples/fleet">Example</a>
 </p>
 
 ---
@@ -32,10 +23,14 @@ to be there.**
 |---|:---:|:---:|:---:|:---:|
 | Supported | ✅ | ✅ | ✅ | ✅ |
 
+This is the Rust implementation. It is a drop-in for the Go one: the same commands, flags, exit
+codes, `fleet.yaml`, `sandboxes.yaml` and a byte-identical `fleet.lock.json`. What changed is
+[below](#-what-changed-from-the-go-implementation).
+
 ## ⚡ What it looks like
 
 A test run opened a pull request, pushed straight to `main`, left a tag behind and edited some
-topics. `verify` names every bit of it; `reset` puts it back in half a second:
+topics. `verify` names every bit of it; `reset` puts it back in seconds:
 
 ```console
 $ forgelab verify --sandbox local
@@ -70,7 +65,7 @@ commands are split along that line: `apply` when the fleet changes, `reset` arou
 | `forgelab destroy` | delete the declared repos, and nothing else | deletes |
 
 Every command takes `--sandbox <name>`, plus `--fleet <dir>` (default `.`), `--config <file>`,
-`--yes` and `-v`.
+`--concurrency <n>`, `--yes` and `-v`.
 
 ## 📦 Install
 
@@ -79,43 +74,38 @@ A prebuilt binary, for Linux and macOS on x86_64 and arm64, into your own `~/.lo
 
 ```sh
 mkdir -p ~/.local/bin
-curl -fsSL "https://github.com/repoplane/forgelab/releases/latest/download/forgelab_$(uname -s)_$(uname -m).tar.gz" \
+curl -fsSL "https://github.com/repoplane/forgelab-rs/releases/latest/download/forgelab_$(uname -s)_$(uname -m).tar.gz" \
   | tar -xz -C ~/.local/bin forgelab
 ```
 
-If `forgelab version` is then "command not found", `~/.local/bin` is not on your `PATH` yet: add
-`export PATH="$HOME/.local/bin:$PATH"` to your `~/.zshrc` or `~/.bashrc`. To uninstall, delete the
-file.
-
 To pin a version, as CI should, replace `latest/download` with `download/v0.1.0`.
 
-Or build it from source with Go:
+Or build it from source with Rust 1.93 or newer:
 
 ```sh
-go install github.com/repoplane/forgelab/cmd/forgelab@latest
+cargo install --git https://github.com/repoplane/forgelab-rs forgelab
 ```
 
-ForgeLab needs `git` on the `PATH` at run time.
+ForgeLab needs `git` 2.31 or newer on the `PATH` at run time.
 
-**Shell completion** — commands, flags, and the sandbox names from your `sandboxes.yaml`. Add one
-line to `~/.zshrc` (or `~/.bashrc`, with `bash`):
+**Shell completion** — commands, flags, and the sandbox names from your `sandboxes.yaml`:
 
 ```sh
-eval "$(forgelab completion zsh)"
+eval "$(forgelab completion zsh)"      # or bash
 ```
 
 ## 🚀 Try it in two minutes
 
-Needs Go, git and Docker.
+Needs Rust, git and Docker.
 
 ```sh
 make up                                # a local Forgejo on :3000; prints a token
 export FORGELAB_LOCAL_TOKEN=…
-go run ./cmd/forgelab apply  --sandbox local --fleet examples/fleet
-go run ./cmd/forgelab verify --sandbox local --fleet examples/fleet
+cargo run -p forgelab -- apply  --sandbox local --fleet examples/fleet
+cargo run -p forgelab -- verify --sandbox local --fleet examples/fleet
 # open a pull request, push a branch, change a topic at http://localhost:3000 …
-go run ./cmd/forgelab verify --sandbox local --fleet examples/fleet   # exit 1, names the drift
-go run ./cmd/forgelab reset  --sandbox local --fleet examples/fleet
+cargo run -p forgelab -- verify --sandbox local --fleet examples/fleet   # exit 1, names the drift
+cargo run -p forgelab -- reset  --sandbox local --fleet examples/fleet
 make down
 ```
 
@@ -133,7 +123,8 @@ my-fleet/
 └── fleet.lock.json     resolved settings + baseline commit SHAs; written by apply; commit it
 ```
 
-`fleet.yaml` carries only what a directory cannot say. Every field is optional:
+`fleet.yaml` carries only what a directory cannot say. Every field is optional, and a key that
+is not one of them is an error rather than silently ignored:
 
 ```yaml
 version: 1
@@ -151,8 +142,8 @@ repos:
 
 A directory that holds a file is a repository; one that holds only directories is a
 **namespace**. A repository is its path — `platform/core/api` in the lock, the reports and the
-`repos:` overrides — so the same leaf name can live in two namespaces. Each forge lands the path
-where it can, and what it cannot hold is joined with `-`:
+`repos:` overrides. Each forge lands the path where it can, and what it cannot hold is joined
+with `-`:
 
 | `repos/…` | GitLab | Azure DevOps | GitHub · Forgejo |
 |---|---|---|---|
@@ -160,17 +151,10 @@ where it can, and what it cannot hold is joined with `-`:
 | `services/api` | `<group>/services/api` | `services/_git/api` | `services-api` |
 | `platform/core/api` | `<group>/platform/core/api` | `platform/_git/core-api` | `platform-core-api` |
 
-`apply` creates the subgroups and projects it needs, with `forgelab-managed` as their
-description: they have no topics, so that is their marker. It means what the topic means on a
-repository — work in it freely, and expect ForgeLab to remove it and seed it again. `destroy`
-removes a marked namespace **with all it holds by then**, a repository a test created there
-included; one somebody else made is used but never removed, and neither is the sandbox's own
-group or org. (An Azure DevOps `default_project` is a project like the others.) On a sandbox with
-no declared repository left, `destroy` asks nothing. Two paths that join to the same name
-(`a-b/c` and `a/b-c`) are refused on every forge, so a fleet never works on one forge only.
-
 `sandboxes.yaml` says where it goes. The org is only reachable through here — there is no
-`--org` flag to mistype:
+`--org` flag to mistype. `token_env` names an environment variable; the file never holds a
+secret. `concurrency` is optional and overrides the forge's own default (Forgejo 8, GitHub 6,
+GitLab 8, Azure DevOps 8):
 
 ```yaml
 version: 1
@@ -179,150 +163,116 @@ sandboxes:
     forge: forgejo
     base_url: http://localhost:3000
     org: forgelab-sandbox
-    token_env: FORGELAB_LOCAL_TOKEN     # the NAME of a variable, never a secret
-```
-
-A GitHub sandbox needs no `base_url` (set it only for Enterprise Server):
-
-```yaml
+    token_env: FORGELAB_LOCAL_TOKEN
   gh:
     forge: github
     org: your-sandbox-org
     token_env: FORGELAB_GH_TOKEN
-```
-
-Use a **fine-grained personal access token** whose *resource owner* is the sandbox org: it cannot
-reach anything else, so a leak or a mistake stays inside disposable fixtures. Give it *All
-repositories*, and read/write on **Administration**, **Contents** and **Pull requests**. (A classic
-PAT with `repo` + `delete_repo` also works, but it can touch every repository you can.) Add
-*Workflows* only if a fixture carries `.github/workflows/`.
-
-ForgeLab only ever reads the variable named by `token_env`, so keep the token wherever you keep
-secrets — it never needs to be in a file, a flag or your `gh` login. On macOS, the Keychain:
-
-```sh
-security add-generic-password -a "$USER" -s forgelab-gh -w        # prompts; paste the token
-export FORGELAB_GH_TOKEN=$(security find-generic-password -s forgelab-gh -w)
-```
-
-Use an org that holds nothing else you care about, and remember that a `visibility: public`
-fixture really is public there.
-
-A GitLab sandbox is a group, addressed by its full path (`base_url` only for self-managed):
-
-```yaml
   gl:
     forge: gitlab
     org: your-sandbox-group             # or a nested path: your-group/sandbox
     token_env: FORGELAB_GL_TOKEN
-```
-
-Make the group **public** if any fixture is — a GitLab project cannot be more visible than its
-group; private projects inside a public group stay private. For the token, a fine-grained personal
-access token limited to that group, with read/write on its *Projects* and *Repository* resources
-(code, branches, tags, protected branches, merge requests) and read on *Groups* — plus the
-**user-level** permission *Project: Create*, because GitLab creates projects through a global
-endpoint. *Code* (download and push) is a permission of its own, apart from the repository ones:
-without it every git operation answers 403. A fleet with namespaces also needs the user-level
-*Group* permission to make subgroups, and the Owner role on the group for `destroy` to remove them. A classic token with `api` + `write_repository`
-also works. Since a GitLab token is only
-as narrow as its account, a dedicated account that belongs to nothing but the sandbox group is the
-safest owner for it.
-
-An Azure DevOps sandbox is an organisation. Every repository there lives in a project:
-`default_project` names the one for repositories without a namespace, and a namespace's first
-directory is a project of its own. ForgeLab creates them all, the default one included:
-
-```yaml
   ado:
     forge: azuredevops
     org: your-org
     default_project: fleet
     token_env: FORGELAB_ADO_TOKEN
+    concurrency: 2
 ```
 
-The token is a personal access token limited to that one organisation, with *Code: Read, write &
-manage* and *Project and Team: Read, write & manage*: ForgeLab creates and deletes the projects
-(a few seconds each). Azure DevOps is the odd one out, and `plan` says so:
-
-- Repositories have **no topics** and no visibility of their own, so those fleet settings are
-  ignored there — and with no topic to carry it, so is the marker guard: in those projects a
-  repository with a declared name *is* ForgeLab's. Use an organisation that holds nothing else.
-- `archived: true` becomes **disabled**, which is stricter than archived: the repository is still
-  listed, but every read of it answers 404. A good edge case for whatever consumes the listing.
-- Pull request ids are unique across the project, not per repository.
-- A new project is born with an empty repository of its own name. ForgeLab leaves it alone; it
-  goes with the project.
-
-[`examples/fleet`](examples/fleet) is a working one: twelve tiny repositories at the root, each a
-shape that forge integrations trip on, and three more in namespaces.
-
-| Fixture | Shape |
-|---|---|
-| `compliant` | the control — nothing unusual |
-| `master-branch` | a default branch that is not `main` |
-| `archived` | archived: readable, and rejects every write |
-| `no-commits` | no commits at all — the null default ref |
-| `tagged` | carries tags `v1` and `v2` |
-| `scaffold` | a README and nothing else |
-| `public` | the one public repository |
-| `dotfiles` | everything under dot-prefixed paths |
-| `billing-api` · `ledger-worker` · `node-gateway` · `parser-svc` | plain services, with topics |
-| `services/api` · `platform/core/api` | the same leaf name in two namespaces, one of them deep |
-| `platform/tooling` | a repository next to a namespace |
-
-Twelve is chosen for its divisors: list the root with a page size of 12, 6, 5, 4, 3 or 1 and you
-get an exact single page, exact multiples, a short tail and a deep cursor chain. Where namespaces
-are only name prefixes (GitHub, Forgejo) the listing holds all fifteen.
+The tokens, the per-forge caveats (a GitLab project cannot be more visible than its group; an
+Azure DevOps repository has no topics and no visibility of its own, and `archived` there means
+`disabled`) and the safety model are exactly those of the Go implementation; its
+[README](https://github.com/repoplane/forgelab#readme) remains the reference for them.
 
 ## 🧭 How it behaves
 
 **👀 Declared repos only.** ForgeLab looks each declared repository up by name and never lists the
-org. Anything else in there is invisible to it — never compared, reported or touched — so you can
-use the sandbox org by hand. The flip side: ForgeLab guarantees the state of *its* repos, not the
-contents of the org. If your tests assert on a whole-org listing, filter on the `forgelab-managed`
-topic or keep hand-made repos out of that org.
+org. Anything else in there is invisible to it — never compared, reported or touched.
 
 **🎯 Deterministic.** Content is pushed with git under a pinned author and clock, so commit SHAs
-are identical on every machine and every forge. `fleet.lock.json` is byte-stable, and your tests
-can assert against it.
+are identical on every machine and every forge. `fleet.lock.json` is byte-stable, and identical
+to the one the Go implementation writes: the committed locks of `repoplane/fleets` are the
+test.
 
 **🪶 `reset` is cheap and narrow.** It writes only to repositories that drifted, moves refs without
-transferring objects, and *cannot* create or delete a repository — a missing one is exit 2, not
-something to helpfully put back.
+transferring objects, and *cannot* create or delete a repository — a missing one is exit 2.
 
 **🔒 Safe by construction.** Every repo ForgeLab creates carries a marker topic; a same-named repo
-without it is never adopted, reset or deleted — so even pointed at the wrong org, the worst it can
-do is create its own fixtures there. Give it a token that can only reach the sandbox, and that is
-the whole blast radius.
-`destroy` asks before deleting (`--yes` skips it). Tokens are read from an environment variable
-named in `sandboxes.yaml` — never from a file or a flag.
+without it is never adopted, reset or deleted. `destroy` asks before deleting (`--yes` skips it).
+Credentials never appear on a command line: git receives them as an `Authorization` header
+scoped to the forge's origin.
 
 ### Exit codes
-
-`verify` is built to be a CI gate, so it keeps apart two failures that want opposite responses:
 
 | Exit | Meaning | Do |
 |:---:|---|---|
 | `0` | matches the lock | proceed |
 | `1` | **drift** — commits, branches, tags, open pull requests, settings | `reset`, retry once |
-| `2` | **guard failure** — repo missing, not ForgeLab's, baseline or fleet changed | stop, look |
+| `2` | **guard failure** or error — repo missing, not ForgeLab's, baseline or fleet changed, a forge that would not answer | stop, look |
 
-What `reset` cannot restore: pull requests themselves. It rewinds `main` after a merge, closes
-what is open and deletes the branches, but no forge deletes a pull request — each run leaves its
-requests behind as closed or merged, and numbering keeps climbing. Tag what your tests create with
-a run id you control (a branch prefix, a label) and filter on it; never assert on a number or a
-count. For a truly clean slate, `destroy` then `apply`. It also cannot empty a `no-commits` repo
-that was pushed to: delete it on the forge, then `apply`.
+## 🔁 What changed from the Go implementation
+
+Behaviour that is different on purpose. Everything else, output lines included, is the same.
+
+- **Every failure is reported.** A run over a hundred repositories names each one that failed
+  and why, not the first it happened to notice. Guard failures still win: nothing is retried
+  past one.
+- **Transient failures are retried, within a time budget.** 5xx answers, dropped connections and
+  timeouts are retried with backoff; rate limits are waited out as often as fits in ten minutes
+  rather than four times. A limit that asks for more than that is an error, as before. GitHub
+  mutations are serialised and paced at one per second on top of that.
+- **`--concurrency`**, and a `concurrency:` key per sandbox, with defaults per forge.
+- **`apply` converges on tag and default-branch changes.** A declared tag that moved or is
+  missing is pushed; a tag or default branch the *previous* lock declared and the fleet no
+  longer does is removed. Refs a test created stay `reset`'s business.
+- **GitLab: a namespace pending deletion is waited for**, up to five minutes, both when
+  `destroy` removes it and when the next `apply` needs it back. One that never goes is an error
+  (exit 2) where it used to be reported as kept and exit 0.
+- **Azure DevOps:** a repository already gone when `destroy` deletes it is not an error; pull
+  requests are paged until an empty page; a disabled repository the fleet wants enabled is
+  planned as "enable, then check", instead of failing.
+- **Branch protection is lifted on Forgejo and GitHub too** before a force-push, as the
+  interface always promised. On GitHub this covers classic protection and repository rulesets;
+  an organisation ruleset is reported, not lifted.
+- **Strict YAML.** A misspelt key in `fleet.yaml` or `sandboxes.yaml` is an error. `marker_topic`
+  is lowercased and validated; a declared tag is checked as a ref name and may not be
+  `forgelab-baseline`.
+- **The lock is written atomically**, a typo in the command is reported before any sandbox is
+  opened, and Ctrl-C or SIGTERM stops every wait and every git subprocess and removes the
+  scratch directories.
+- **git gets its credential as a header**, not in the URL, so it never shows in `ps`. Proxy and
+  CA variables (`HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `GIT_SSL_CAINFO`, …) reach git. git
+  2.31 or newer is required for this.
 
 ## 🛠 Development
 
 ```sh
-make unit     # no Docker
-make test     # end-to-end against a throwaway Forgejo container
-make ci       # exactly what CI runs: lint, then test
-make dist     # cross-compile the release archives into ./dist
+make unit     # no Docker: unit tests, the golden locks, the CLI and its completion script
+make test     # plus the end-to-end suite against a throwaway Forgejo container
+make scale    # the 108-repository fleet from ../fleets through the fault layer (minutes)
+make ci       # exactly what CI runs on a pull request: lint, then test
+make dist     # the release archives into ./dist (Linux needs cargo-zigbuild and zig)
 ```
+
+The golden-lock and scale tests read the `repoplane/fleets` checkout at `../fleets`, or wherever
+`FORGELAB_FLEETS_DIR` points.
+
+### The fault layer
+
+`crates/faultproxy` puts back what a local Forgejo does not do and the cloud forges do: rate
+limits with and without `Retry-After`, GitHub's secondary-limit body, 5xx, dropped connections,
+latency, and reads served stale for a few seconds after a write. It runs in-process in the
+end-to-end tests and as a reverse proxy in front of the forge, where git traffic is faulted too:
+
+```sh
+make up && make proxy                  # Forgejo on :3000, the proxy on :3001
+# point a sandbox's base_url at http://127.0.0.1:3001 and run forgelab against it
+```
+
+Rules live in `faults/*.yaml`. Every decision is a function of a seed and the request's position
+in its own path's history, so a failing run is reproduced with `FORGELAB_FAULT_SEED=<n>`; the
+tests print the seed.
 
 Pushing a `v*` tag publishes a release: `git tag v0.1.0 && git push origin v0.1.0`.
 

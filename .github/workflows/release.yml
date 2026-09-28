@@ -9,22 +9,58 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: repoplane/fleets
+          path: fleets
+      - uses: dtolnay/rust-toolchain@1.93
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+      - uses: mlugg/setup-zig@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-zigbuild --locked
+      # Never publish what does not pass.
+      - run: make ci
+        env:
+          FORGELAB_FLEETS_DIR: ${{ github.workspace }}/fleets
+      - run: make dist-linux VERSION="${{ github.ref_name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+
+  darwin:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.93
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: make dist-darwin VERSION="${{ github.ref_name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin
+          path: dist/*.tar.gz
+
+  publish:
+    needs: [linux, darwin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
-      TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
+      - uses: actions/download-artifact@v4
         with:
-          go-version-file: go.mod
-
-      # Never publish what does not pass.
-      - run: make ci
-
-      - run: make dist VERSION="$TAG"
-
-      - run: gh release create "$TAG" dist/* --verify-tag --generate-notes
+          path: dist
+          merge-multiple: true
+      - run: make checksums
+      - run: gh release create "${{ github.ref_name }}" dist/* --verify-tag --generate-notes

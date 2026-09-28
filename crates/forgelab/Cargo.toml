@@ -1,0 +1,46 @@
+[package]
+name = "forgelab"
+description = "Deterministic repository fleets on a sandbox org: create, verify, reset, destroy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "forgelab"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+http.workspace = true
+rand.workspace = true
+serde_yaml_ng = "0.10"
+jiff = "0.2"
+sha2 = "0.11"
+hex = "0.4"
+walkdir = "2"
+tempfile = "3"
+secrecy = "0.10"
+base64 = "0.22"
+url = "2"
+async-trait = "0.1"
+futures = "0.3"
+reqwest = { version = "0.13", features = ["gzip", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+testcontainers = { version = "0.28", features = ["http_wait", "blocking"] }
+forgelab-faultproxy = { path = "../faultproxy" }
+reqwest = { version = "0.13", features = ["json", "blocking"] }
+libc = "0.2"
