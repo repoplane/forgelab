@@ -5,61 +5,59 @@ URL   := http://localhost:3000
 
 # A release passes VERSION=<tag>; a local build describes the checkout it came from.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X main.version=$(VERSION)
+export FORGELAB_VERSION := $(VERSION)
 
-# <GOOS>/<GOARCH>/<name>. The name is what `uname -s`_`uname -m` prints on that platform, so
+# Where the repoplane/fleets checkout is: the golden-lock and scale tests read it.
+FORGELAB_FLEETS_DIR ?= $(abspath ../fleets)
+export FORGELAB_FLEETS_DIR
+
+# <rust target>/<name>. The name is what `uname -s`_`uname -m` prints on that platform, so
 # the install one-liner in the README can build the asset URL with no script in between.
-PLATFORMS := linux/amd64/Linux_x86_64 linux/arm64/Linux_aarch64 \
-             darwin/amd64/Darwin_x86_64 darwin/arm64/Darwin_arm64
+LINUX_TARGETS  := x86_64-unknown-linux-musl/Linux_x86_64 aarch64-unknown-linux-musl/Linux_aarch64
+DARWIN_TARGETS := x86_64-apple-darwin/Darwin_x86_64 aarch64-apple-darwin/Darwin_arm64
 
-.PHONY: help build dist lint test unit lock ci up down
+.PHONY: help build lint unit test scale lock ci up down proxy dist dist-linux dist-darwin checksums
 
 ## Show this help
 help:
 	@awk '/^## /{doc=substr($$0,4); next} \
 	      /^#/{next} \
-	      /^[a-z][a-z-]*:/{if(doc!=""){printf "  \033[1m%-6s\033[0m %s\n", substr($$1,1,length($$1)-1), doc; doc=""}; next} \
+	      /^[a-z][a-z-]*:/{if(doc!=""){printf "  \033[1m%-11s\033[0m %s\n", substr($$1,1,length($$1)-1), doc; doc=""}; next} \
 	      {doc=""}' $(MAKEFILE_LIST)
 
 ## Build ./bin/forgelab
 build:
-	go build -ldflags "$(LDFLAGS)" -o bin/forgelab ./cmd/forgelab
+	cargo build --release -p forgelab
+	@mkdir -p bin && cp target/release/forgelab bin/forgelab
 
-## Cross-compile release archives and checksums into ./dist
-dist:
-	@rm -rf dist && mkdir -p dist
-	@for p in $(PLATFORMS); do \
-		IFS=/ read -r os arch name <<< "$$p"; \
-		echo "  forgelab_$$name.tar.gz"; \
-		mkdir -p dist/$$name && cp LICENSE dist/$$name/ && \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o dist/$$name/forgelab ./cmd/forgelab && \
-		tar -czf dist/forgelab_$$name.tar.gz -C dist/$$name forgelab LICENSE && \
-		rm -rf dist/$$name || exit 1; \
-	done
-	@cd dist && (sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz) > checksums.txt
-
-## Check formatting and run go vet
+## Check formatting, clippy, and that the CLI links no test-only crate
 lint:
-	@out=$$(gofmt -l .); test -z "$$out" || { echo "not gofmt-clean:"; echo "$$out"; exit 1; }
-	go vet ./...
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	@if cargo tree -p forgelab -e normal --prefix none | grep -qE 'testcontainers|bollard|forgelab-faultproxy'; then \
+		echo "the CLI links a test-only crate"; exit 1; fi
 
-# -count=1 defeats Go's test cache: the suite boots a container and talks to Docker, so a
-# cached "ok" would report success for a run that never happened.
-## Run every test, including the end-to-end suite (needs Docker)
-test:
-	go test -count=1 ./...
-
-## Run the tests that need no Docker
+## Run the tests that need no Docker (unit, golden locks, CLI)
 unit:
-	go test -count=1 -short ./...
+	cargo test --workspace
+
+# One test at a time: the tests share one Forgejo, and its SQLite loses a pushed branch to
+# "database is locked" when several tests push eight repositories each at once -- after which
+# the branch never appears in the API. The Go suite ran them one at a time for the same reason.
+## Run every test, including the end-to-end suite against a throwaway Forgejo (needs Docker)
+test: unit
+	FORGELAB_E2E=1 cargo test -p forgelab --test e2e -- --test-threads=1
+
+## Run the 108-repository scale fleet through the fault layer (needs Docker and ../fleets)
+scale:
+	FORGELAB_E2E=1 FORGELAB_SCALE=1 cargo test -p forgelab --test e2e scale_faults -- --test-threads=1 --nocapture
 
 ## Regenerate examples/fleet/fleet.lock.json after editing the example fleet
 lock:
-	FORGELAB_UPDATE_LOCK=1 go test -count=1 -run TestWalk ./internal/itest
+	FORGELAB_UPDATE_LOCK=1 cargo test -p forgelab --test golden_lock examples_fleet
 
 # The workflow calls the same targets, so a green `make ci` here means a green run there.
-## Everything CI runs: lint, then test
+## Everything CI runs on a pull request: lint, then test
 ci: lint test
 
 # A token's secret is only revealed once, so a name left over from an earlier `make up`
@@ -77,8 +75,44 @@ up:
 	echo "forgejo: $(URL)  ($(ADMIN) / $(PASS))"; \
 	echo; \
 	echo "  export FORGELAB_LOCAL_TOKEN=$$token"; \
-	echo "  go run ./cmd/forgelab apply --sandbox local --fleet examples/fleet"
+	echo "  cargo run -p forgelab -- apply --sandbox local --fleet examples/fleet"
 
 ## Stop the local Forgejo and drop its data
 down:
 	@docker compose down -v 2>/dev/null || true
+
+## Run the fault proxy in front of the local Forgejo on :3001 (point a sandbox's base_url at it)
+proxy:
+	cargo run -p forgelab-faultproxy -- --upstream $(URL) --listen 127.0.0.1:3001 --rules faults/mixed.yaml
+
+## Cross-compile the release archives and checksums into ./dist (Linux needs cargo-zigbuild)
+dist: dist-linux dist-darwin checksums
+
+dist-linux:
+	@mkdir -p dist
+	@for p in $(LINUX_TARGETS); do \
+		IFS=/ read -r target name <<< "$$p"; \
+		echo "  forgelab_$$name.tar.gz"; \
+		rustup target add $$target >/dev/null 2>&1; \
+		cargo zigbuild --release -p forgelab --target $$target || exit 1; \
+		$(MAKE) --no-print-directory archive TARGET=$$target NAME=$$name; \
+	done
+
+dist-darwin:
+	@mkdir -p dist
+	@for p in $(DARWIN_TARGETS); do \
+		IFS=/ read -r target name <<< "$$p"; \
+		echo "  forgelab_$$name.tar.gz"; \
+		rustup target add $$target >/dev/null 2>&1; \
+		cargo build --release -p forgelab --target $$target || exit 1; \
+		$(MAKE) --no-print-directory archive TARGET=$$target NAME=$$name; \
+	done
+
+archive:
+	@rm -rf dist/$(NAME) && mkdir -p dist/$(NAME)
+	@cp target/$(TARGET)/release/forgelab dist/$(NAME)/forgelab && cp LICENSE dist/$(NAME)/
+	@tar -czf dist/forgelab_$(NAME).tar.gz -C dist/$(NAME) forgelab LICENSE
+	@rm -rf dist/$(NAME)
+
+checksums:
+	@cd dist && (sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz) > checksums.txt

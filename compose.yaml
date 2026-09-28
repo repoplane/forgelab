@@ -6,7 +6,7 @@
 # The Go tests do the same thing through testcontainers on a random port.
 services:
   forgejo:
-    # Forgejo 15.0.8 (LTS) — keep in step with internal/itest/forgejo_test.go
+    # Forgejo 15.0.8 (LTS) — keep in step with crates/forgelab/tests/e2e/lab.rs
     image: codeberg.org/forgejo/forgejo@sha256:0a2e377fd3c5af3451bfa1f44e6f198f322b6d5e03f04a028b8e672f1ccddc9f
     container_name: forgelab-forgejo
     ports:
