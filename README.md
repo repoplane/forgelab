@@ -78,7 +78,7 @@ curl -fsSL "https://github.com/repoplane/forgelab/releases/latest/download/forge
   | tar -xz -C ~/.local/bin forgelab
 ```
 
-To pin a version, as CI should, replace `latest/download` with `download/v0.1.0`.
+To pin a version, as CI should, replace `latest/download` with `download/v0.13.0`.
 
 Or build it from source with Rust 1.93 or newer:
 
