@@ -3,7 +3,7 @@
 #
 #   make up    →  boots it, creates the admin, prints `export FORGELAB_LOCAL_TOKEN=…`
 #
-# The Go tests do the same thing through testcontainers on a random port.
+# The end-to-end tests do the same thing through testcontainers on a random port.
 services:
   forgejo:
     # Forgejo 15.0.8 (LTS) — keep in step with crates/forgelab/tests/e2e/lab.rs
