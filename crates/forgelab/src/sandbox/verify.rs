@@ -7,7 +7,7 @@ use crate::util::{go_slice, short};
 
 use super::pool::for_each_collect;
 use super::report::{CommandError, aggregate};
-use super::{Env, without_marker};
+use super::{Env, sorted};
 
 /// One declared repository compared against the lock.
 #[derive(Default)]
@@ -85,29 +85,52 @@ impl Env {
         Ok(())
     }
 
-    /// Looks every declared repository up by name: a few API reads and one git ls-remote each,
-    /// no writes.
+    /// Looks every declared repository up by name -- in batches where the forge allows, one
+    /// at a time where it does not -- then reads each one's refs with git ls-remote. No writes.
     pub(crate) async fn compare(&self, lock: &Lock) -> Result<Report, CommandError> {
-        let states: Vec<State> = lock
+        let names: Vec<String> = lock.repos.iter().map(|r| r.name.clone()).collect();
+        let found = self.lookup_confirmed(&names).await?;
+        self.progress.phase("check", names.len());
+        let states: Vec<(State, Option<forge::Repo>)> = lock
             .repos
             .iter()
-            .map(|want| State {
-                want: want.clone(),
-                ..State::default()
+            .zip(found)
+            .map(|(want, live)| {
+                (
+                    State {
+                        want: want.clone(),
+                        ..State::default()
+                    },
+                    live,
+                )
             })
             .collect();
-        let results =
-            for_each_collect(states, self.concurrency, &self.cancel, |mut s| async move {
-                let r = self.compare_one(&mut s).await;
-                (s, r)
-            })
-            .await;
-        Ok(Report(aggregate(results, |s| &s.want.name)?))
+        let results = for_each_collect(
+            states,
+            self.concurrency,
+            &self.cancel,
+            |(mut s, live)| async move {
+                let r = self.compare_one(&mut s, live).await;
+                self.progress.add(1);
+                ((s, None), r)
+            },
+        )
+        .await;
+        Ok(Report(
+            aggregate(results, |(s, _)| &s.want.name)?
+                .into_iter()
+                .map(|(s, _)| s)
+                .collect(),
+        ))
     }
 
-    async fn compare_one(&self, s: &mut State) -> Result<(), CommandError> {
+    async fn compare_one(
+        &self,
+        s: &mut State,
+        live: Option<forge::Repo>,
+    ) -> Result<(), CommandError> {
         let want = s.want.clone();
-        let Some(live) = self.get_confirmed(&want.name).await? else {
+        let Some(mut live) = live else {
             s.guards.push(format!(
                 "missing from {}: run `forgelab apply --sandbox {}`",
                 self.sandbox.org, self.sandbox.name
@@ -116,11 +139,8 @@ impl Env {
         };
         s.live = live.clone();
         let caps = self.forge.caps();
-        if caps.topics && !live.topics.iter().any(|t| t == &self.sandbox.marker_topic) {
-            s.guards.push(format!(
-                "exists without the {:?} topic, so it is not forgelab's: refusing to touch it",
-                self.sandbox.marker_topic
-            ));
+        if !self.is_ours(&live) {
+            s.guards.push(self.not_ours());
             return Ok(());
         }
 
@@ -136,7 +156,7 @@ impl Env {
                 live.archived, want.archived
             ));
         }
-        let got = without_marker(&live.topics, &self.sandbox.marker_topic);
+        let got = sorted(&live.topics);
         if caps.topics && got != want.topics {
             s.drift.push(format!(
                 "topics are {}, want {}",
@@ -234,7 +254,10 @@ impl Env {
             Some(_) => {}
         }
 
-        s.requests = self.forge.open_requests(&want.name).await?;
+        s.requests = match live.open_requests.take() {
+            Some(r) => r,
+            None => self.forge.open_requests(&want.name).await?,
+        };
         // Open, never "how many exist": request numbers are monotonic and closed requests are
         // permanent, so a count can never be reset.
         if !s.requests.is_empty() {

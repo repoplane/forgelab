@@ -612,6 +612,7 @@ impl Forge for Client {
     fn caps(&self) -> Caps {
         Caps {
             topics: false,
+            marker: false,
             visibility: false,
             archived_unreadable: true,
             namespace_depth: NamespaceDepth::Depth(1),
@@ -656,6 +657,7 @@ impl Forge for Client {
             archived: r.is_disabled,
             empty: false,
             topics: Vec::new(),
+            ..Repo::default()
         };
         if r.is_disabled {
             return Ok(Some(out)); // unreadable: nothing more can be learned
@@ -677,6 +679,7 @@ impl Forge for Client {
         _visibility: &str,
         _default_branch: &str,
         _topics: &[String],
+        _marker: &str,
     ) -> Result<(), ForgeError> {
         let (project, name) = self.split(name)?;
         let p = self
@@ -1238,8 +1241,12 @@ mod tests {
                 (m, p) => panic!("unexpected {m} {p}"),
             }
         }));
-        c.create("platform/core/api", "", "", &[]).await.unwrap();
-        c.create("platform/tooling", "", "", &[]).await.unwrap();
+        c.create("platform/core/api", "", "", &[], "forgelab-managed")
+            .await
+            .unwrap();
+        c.create("platform/tooling", "", "", &[], "forgelab-managed")
+            .await
+            .unwrap();
         {
             let bodies = bodies.lock().unwrap();
             assert_eq!(bodies.len(), 3, "{bodies:?}\n{:?}", t.seen());
@@ -1307,7 +1314,9 @@ mod tests {
                 (m, p) => panic!("unexpected {m} {p}"),
             }
         }));
-        c.create("services/api", "", "", &[]).await.unwrap();
+        c.create("services/api", "", "", &[], "forgelab-managed")
+            .await
+            .unwrap();
         assert_eq!(
             posts.load(Ordering::SeqCst),
             2,
@@ -1328,7 +1337,7 @@ mod tests {
             (m, p) => panic!("unexpected {m} {p}"),
         }));
         let err = c
-            .create("services/api", "", "", &[])
+            .create("services/api", "", "", &[], "forgelab-managed")
             .await
             .unwrap_err()
             .to_string();
@@ -1368,7 +1377,10 @@ mod tests {
         let mut tasks = tokio::task::JoinSet::new();
         for i in 0..8 {
             let c = c.clone();
-            tasks.spawn(async move { c.create(&format!("platform/svc{i}"), "", "", &[]).await });
+            tasks.spawn(async move {
+                c.create(&format!("platform/svc{i}"), "", "", &[], "forgelab-managed")
+                    .await
+            });
         }
         while let Some(r) = tasks.join_next().await {
             r.unwrap().unwrap();
@@ -1455,7 +1467,7 @@ mod tests {
             }
             reply(200, r#"{"id":"p9"}"#)
         }));
-        c.create("platform/platform", "", "", &[])
+        c.create("platform/platform", "", "", &[], "forgelab-managed")
             .await
             .expect_err("a conflict in a project that was already there must surface");
     }
@@ -1488,7 +1500,9 @@ mod tests {
             c.get("dotfiles").await.unwrap().is_none(),
             "before its project exists a repository is missing"
         );
-        c.create("dotfiles", "", "", &[]).await.unwrap();
+        c.create("dotfiles", "", "", &[], "forgelab-managed")
+            .await
+            .unwrap();
         assert_eq!(
             *posts.lock().unwrap(),
             [

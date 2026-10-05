@@ -3,7 +3,8 @@
 //! retry a transient failure, serialise and pace writes where a forge asks for that -- so that
 //! no client has its own retry loop, and a test can stand in for the network.
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -205,6 +206,28 @@ impl WriteLane {
     }
 }
 
+/// When the last rate-limit pause any client is sitting through ends, in milliseconds since
+/// `epoch()`. Process-wide on purpose: it is what a progress line reports, and a run drives
+/// one forge.
+static RATE_LIMIT_END_MS: AtomicU64 = AtomicU64::new(0);
+
+fn epoch() -> &'static std::time::Instant {
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now)
+}
+
+fn note_rate_limit(wait: Duration) {
+    let end = epoch().elapsed() + wait;
+    RATE_LIMIT_END_MS.fetch_max(end.as_millis() as u64, Ordering::SeqCst);
+}
+
+/// How much longer a rate-limit pause has to run, if one is under way.
+pub fn rate_limited_for() -> Option<Duration> {
+    let end = RATE_LIMIT_END_MS.load(Ordering::SeqCst);
+    let now = epoch().elapsed().as_millis() as u64;
+    (end > now).then(|| Duration::from_millis(end - now))
+}
+
 /// Per-request knobs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RequestOpts {
@@ -393,8 +416,14 @@ impl HttpClient {
 
             let status = resp.status().as_u16();
             // A classifier may veto a 2xx: Azure DevOps answers a bad token with a 203 and a
-            // sign-in page, which is not success.
-            if (200..300).contains(&status) && (self.classify)(&resp).class != Class::Auth {
+            // sign-in page, which is not success, and GitHub's GraphQL can answer an exhausted
+            // budget with a 200.
+            if (200..300).contains(&status)
+                && !matches!(
+                    (self.classify)(&resp).class,
+                    Class::Auth | Class::RateLimited
+                )
+            {
                 let (parts, body) = resp.into_parts();
                 return Ok(Answer {
                     status,
@@ -415,6 +444,7 @@ impl HttpClient {
                         });
                     }
                     tracing::debug!(forge = self.forge, %method, path, wait_secs = wait.as_secs(), "rate limited, waiting");
+                    note_rate_limit(wait);
                     self.sleep(wait).await?;
                     continue;
                 }

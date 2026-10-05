@@ -7,7 +7,6 @@ use super::Env;
 use super::pool::for_each_collect;
 use super::report::{CommandError, aggregate};
 use super::verify::State;
-use super::with_marker;
 
 impl Env {
     /// Puts every drifted repository back to its baseline.
@@ -36,8 +35,10 @@ impl Env {
             self.printf("ok: nothing to reset\n");
             return Ok(());
         }
+        self.progress.phase("reset", touched.len());
         let results = for_each_collect(touched, self.concurrency, &self.cancel, |s| async move {
             let r = self.reset_one(&s).await;
+            self.progress.add(1);
             if r.is_ok() {
                 self.printf(format!("reset {} ({})\n", s.want.name, s.drift.join("; ")));
             }
@@ -79,14 +80,13 @@ impl Env {
         }
 
         if s.refs_dirty {
-            // Asked here, right before the push, and not assumed from apply: the branch may
-            // have been protected since, by the forge or by the test that just ran.
-            self.forge
-                .allow_force_push(name, &want.default_branch)
-                .await
-                .map_err(|e| CommandError::Other(format!("allow force-push: {e}")))?;
+            // Not assumed from apply: the branch may have been protected since, by the forge or
+            // by the test that just ran. A refused push is what says so.
             let remote = self.git_remote(name)?;
-            seed::reset_to_baseline(&remote, &want.default_branch, &want.tags).await?;
+            self.force_push(name, &want.default_branch, || async {
+                Ok(seed::reset_to_baseline(&remote, &want.default_branch, &want.tags).await?)
+            })
+            .await?;
         }
 
         let mut settings = Settings {
@@ -121,7 +121,7 @@ impl Env {
         }
 
         self.forge
-            .set_topics(name, &with_marker(&want.topics, &self.sandbox.marker_topic))
+            .set_topics(name, &want.topics)
             .await
             .map_err(|e| CommandError::Other(format!("set topics: {e}")))?;
         if want.archived {

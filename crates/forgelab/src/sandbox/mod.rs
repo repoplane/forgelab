@@ -8,6 +8,7 @@ pub mod apply;
 pub mod config;
 pub mod destroy;
 pub mod pool;
+pub mod progress;
 pub mod ready;
 pub mod report;
 pub mod reset;
@@ -20,8 +21,11 @@ use std::sync::{Arc, Mutex};
 use secrecy::SecretString;
 use tokio_util::sync::CancellationToken;
 
-pub use config::{CONFIG_FILE, Config, DEFAULT_MARKER_TOPIC, Sandbox, load_config, names};
+pub use config::{CONFIG_FILE, Config, DEFAULT_MARKER, Sandbox, load_config, names};
 pub use report::{CommandError, FailureReport, RepoFailure};
+
+use pool::for_each_collect;
+use report::aggregate;
 
 use crate::fleet::{self, Lock};
 use crate::forge::{self, Forge, GitRemote, Transport};
@@ -79,6 +83,8 @@ pub struct Env {
     /// Repositories worked on at once.
     pub concurrency: usize,
     pub cancel: CancellationToken,
+    /// Where the current phase is, for the line printed while a long one runs.
+    pub(crate) progress: Arc<progress::Progress>,
     yes: bool,
     verbose: bool,
     input: Mutex<Option<Box<dyn BufRead + Send>>>,
@@ -167,9 +173,11 @@ impl Env {
             .or(sb.concurrency)
             .unwrap_or_else(|| forge.policy().default_concurrency)
             .max(1);
+        let progress = progress::Progress::start(forge.name());
         Ok(Env {
             sandbox: sb,
             forge,
+            progress,
             fleet_dir,
             concurrency,
             cancel,
@@ -278,6 +286,98 @@ impl Env {
         }
     }
 
+    /// Looks the named repositories up by name, as many to a request as the forge takes and
+    /// that many requests at a time, answering in the order asked. On a forge that cannot look
+    /// several up at once, that is one `get` per name, as it always was.
+    pub(crate) async fn lookup(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<Option<forge::Repo>>, CommandError> {
+        struct Batch {
+            names: Vec<String>,
+            found: Vec<Option<forge::Repo>>,
+        }
+        self.progress.phase("look up", names.len());
+        let batches: Vec<Batch> = names
+            .chunks(self.forge.batch_size().max(1))
+            .map(|c| Batch {
+                names: c.to_vec(),
+                found: Vec::new(),
+            })
+            .collect();
+        let results = for_each_collect(
+            batches,
+            self.concurrency,
+            &self.cancel,
+            |mut b| async move {
+                match self.forge.get_many(&b.names).await {
+                    Ok(found) if found.len() == b.names.len() => {
+                        self.progress.add(found.len());
+                        b.found = found;
+                        (b, Ok(()))
+                    }
+                    Ok(found) => {
+                        let n = found.len();
+                        let want = b.names.len();
+                        (
+                            b,
+                            Err(CommandError::Other(format!(
+                                "asked for {want} repositories, the forge answered for {n}"
+                            ))),
+                        )
+                    }
+                    Err(e) => (b, Err(e.into())),
+                }
+            },
+        )
+        .await;
+        let batches = aggregate(results, |b| b.names[0].as_str())?;
+        Ok(batches.into_iter().flat_map(|b| b.found).collect())
+    }
+
+    /// `lookup`, but no "missing" answer is believed at once: what is missing is asked again,
+    /// all of it together, for the few seconds `get_confirmed` gives one repository. Asking the
+    /// missing ones as a batch rather than each on its own clock is what keeps a fleet that is
+    /// mostly not there yet -- an interrupted apply, a destroy run twice -- from costing six
+    /// seconds a repository.
+    pub(crate) async fn lookup_confirmed(
+        &self,
+        names: &[String],
+    ) -> Result<Vec<Option<forge::Repo>>, CommandError> {
+        let mut found = self.lookup(names).await?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+        let mut pause = std::time::Duration::from_millis(100);
+        loop {
+            let missing: Vec<usize> = (0..names.len()).filter(|&i| found[i].is_none()).collect();
+            if missing.is_empty() || tokio::time::Instant::now() >= deadline {
+                return Ok(found);
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(pause) => {}
+                _ = self.cancel.cancelled() => return Err(CommandError::Other("interrupted".into())),
+            }
+            pause = (pause * 2).min(std::time::Duration::from_secs(1));
+            let again: Vec<String> = missing.iter().map(|&i| names[i].clone()).collect();
+            for (i, r) in missing.into_iter().zip(self.lookup(&again).await?) {
+                found[i] = r;
+            }
+        }
+    }
+
+    /// Whether forgelab created this repository: its description starts with the sandbox's
+    /// marker. On a forge with nowhere to put a marker, every declared name is forgelab's.
+    pub(crate) fn is_ours(&self, live: &forge::Repo) -> bool {
+        !self.forge.caps().marker || live.description.starts_with(&self.sandbox.marker)
+    }
+
+    /// The guard failure for a declared name that is somebody else's repository.
+    pub(crate) fn not_ours(&self) -> String {
+        format!(
+            "exists without the {:?} marker in its description, so it is not forgelab's: refusing to touch it",
+            self.sandbox.marker
+        )
+    }
+
     pub(crate) fn git_remote(&self, name: &str) -> Result<GitRemote, CommandError> {
         Ok(self.forge.git_remote(name)?)
     }
@@ -306,20 +406,9 @@ pub(crate) fn confirm_answer(line: &str) -> Result<(), CommandError> {
     }
 }
 
-/// The declared topics plus the sandbox marker.
-pub(crate) fn with_marker(topics: &[String], marker: &str) -> Vec<String> {
+/// The forge's topics, sorted the way the lock holds them, for comparison.
+pub(crate) fn sorted(topics: &[String]) -> Vec<String> {
     let mut out = topics.to_vec();
-    out.push(marker.to_string());
-    out
-}
-
-/// The forge's topics without the sandbox marker, sorted for comparison.
-pub(crate) fn without_marker(topics: &[String], marker: &str) -> Vec<String> {
-    let mut out: Vec<String> = topics
-        .iter()
-        .filter(|t| t.as_str() != marker)
-        .cloned()
-        .collect();
     out.sort();
     out
 }
@@ -343,11 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn markers() {
-        assert_eq!(with_marker(&["a".into()], "m"), ["a", "m"]);
-        assert_eq!(
-            without_marker(&["m".into(), "b".into(), "a".into()], "m"),
-            ["a", "b"]
-        );
+    fn topics_compare_sorted() {
+        assert_eq!(sorted(&["b".into(), "a".into()]), ["a", "b"]);
     }
 }
