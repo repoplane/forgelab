@@ -3,8 +3,7 @@
 //! retry a transient failure, serialise and pace writes where a forge asks for that -- so that
 //! no client has its own retry loop, and a test can stand in for the network.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -206,26 +205,33 @@ impl WriteLane {
     }
 }
 
-/// When the last rate-limit pause any client is sitting through ends, in milliseconds since
-/// `epoch()`. Process-wide on purpose: it is what a progress line reports, and a run drives
-/// one forge.
-static RATE_LIMIT_END_MS: AtomicU64 = AtomicU64::new(0);
-
-fn epoch() -> &'static std::time::Instant {
-    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-    EPOCH.get_or_init(std::time::Instant::now)
+/// When the rate-limit pause a run is sitting through ends: what its progress line reports.
+/// One per run, shared by the clients that run drives, so a line never reports another run's
+/// pause -- several runs share a process in a test binary, or in a library that embeds forgelab.
+#[derive(Debug, Default)]
+pub struct Pauses {
+    end: Mutex<Option<Instant>>,
 }
 
-fn note_rate_limit(wait: Duration) {
-    let end = epoch().elapsed() + wait;
-    RATE_LIMIT_END_MS.fetch_max(end.as_millis() as u64, Ordering::SeqCst);
-}
+impl Pauses {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Pauses::default())
+    }
 
-/// How much longer a rate-limit pause has to run, if one is under way.
-pub fn rate_limited_for() -> Option<Duration> {
-    let end = RATE_LIMIT_END_MS.load(Ordering::SeqCst);
-    let now = epoch().elapsed().as_millis() as u64;
-    (end > now).then(|| Duration::from_millis(end - now))
+    pub(crate) fn note(&self, wait: Duration) {
+        let end = Instant::now() + wait;
+        let mut g = self.end.lock().unwrap_or_else(|p| p.into_inner());
+        if g.is_none_or(|e| end > e) {
+            *g = Some(end);
+        }
+    }
+
+    /// How much longer the pause has to run, if one is under way.
+    pub fn remaining(&self) -> Option<Duration> {
+        let end = (*self.end.lock().unwrap_or_else(|p| p.into_inner()))?;
+        let now = Instant::now();
+        (end > now).then(|| end - now)
+    }
 }
 
 /// Per-request knobs.
@@ -247,6 +253,7 @@ pub struct HttpClient {
     default_headers: HeaderMap,
     write_lane: Option<Arc<WriteLane>>,
     cancel: CancellationToken,
+    pauses: Option<Arc<Pauses>>,
 }
 
 /// A successful answer.
@@ -299,6 +306,7 @@ impl HttpClient {
             default_headers,
             write_lane: None,
             cancel: CancellationToken::new(),
+            pauses: None,
         }
     }
 
@@ -314,6 +322,12 @@ impl HttpClient {
 
     pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
         self.cancel = cancel;
+        self
+    }
+
+    /// Where to report a rate-limit pause, for the run's progress line.
+    pub fn with_pauses(mut self, pauses: Arc<Pauses>) -> Self {
+        self.pauses = Some(pauses);
         self
     }
 
@@ -444,7 +458,9 @@ impl HttpClient {
                         });
                     }
                     tracing::debug!(forge = self.forge, %method, path, wait_secs = wait.as_secs(), "rate limited, waiting");
-                    note_rate_limit(wait);
+                    if let Some(p) = &self.pauses {
+                        p.note(wait);
+                    }
                     self.sleep(wait).await?;
                     continue;
                 }
@@ -716,5 +732,49 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ForgeError::Cancelled));
+    }
+
+    /// A rate-limit pause is reported to the run's `Pauses`, so its progress line can say so.
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limit_pause_is_reported() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c2 = calls.clone();
+        let t = ScriptedTransport::new(move |_| {
+            if c2.fetch_add(1, Ordering::SeqCst) == 0 {
+                return http::Response::builder()
+                    .status(429)
+                    .header("Retry-After", "5")
+                    .body(Bytes::new())
+                    .unwrap();
+            }
+            ScriptedTransport::reply(200, "")
+        });
+        let pauses = Pauses::new();
+        let c = HttpClient::new("Test", t, crate::forge::classify::generic, HeaderMap::new())
+            .with_pauses(pauses.clone());
+        assert_eq!(pauses.remaining(), None);
+        let p2 = pauses.clone();
+        let watch = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            p2.remaining()
+        });
+        c.call(
+            Method::GET,
+            "http://forge.test/x",
+            None::<&()>,
+            RequestOpts::default(),
+        )
+        .await
+        .unwrap();
+        let during = watch.await.unwrap().expect("a pause under way");
+        assert!(
+            during > Duration::from_secs(4) && during <= Duration::from_secs(5),
+            "{during:?}"
+        );
+        assert_eq!(
+            pauses.remaining(),
+            None,
+            "over once the request went through"
+        );
     }
 }

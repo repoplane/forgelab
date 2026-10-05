@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
 use super::error::ForgeError;
-use super::http::{HttpClient, RequestOpts, Transport, WriteLane};
+use super::http::{HttpClient, Pauses, RequestOpts, Transport, WriteLane};
 use super::{
     Caps, Forge, ForgePolicy, GitAuth, GitRemote, NamespaceDepth, Ref, Removal, Repo, Request,
     Settings, classify, escape_ref, flat_name, path_escape,
@@ -39,6 +39,13 @@ pub struct Client {
 const GRAPHQL_BATCH: usize = 50;
 
 impl Client {
+    /// Reports every rate-limit pause to `pauses`, which the run's progress line reads.
+    pub fn with_pauses(mut self, pauses: Arc<Pauses>) -> Client {
+        self.http = self.http.with_pauses(pauses.clone());
+        self.graphql = self.graphql.with_pauses(pauses.clone());
+        self
+    }
+
     /// `base_url` is the web address, e.g. https://github.com.
     ///
     /// GitHub asks that mutating requests be made serially, not concurrently; bursts of them

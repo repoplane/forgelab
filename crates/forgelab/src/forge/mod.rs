@@ -18,7 +18,8 @@ use async_trait::async_trait;
 
 pub use error::{Class, ForgeError, TransportError};
 pub use http::{
-    HttpClient, RequestOpts, ReqwestTransport, RetryPolicy, ScriptedTransport, Transport, WriteLane,
+    HttpClient, Pauses, RequestOpts, ReqwestTransport, RetryPolicy, ScriptedTransport, Transport,
+    WriteLane,
 };
 
 pub use crate::seed::{GitAuth, GitRemote};
