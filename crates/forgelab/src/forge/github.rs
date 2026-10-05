@@ -29,7 +29,14 @@ pub struct Client {
     org: String,
     token: SecretString,
     http: HttpClient,
+    /// The GraphQL endpoint, for looking several repositories up by name at once. A query is a
+    /// read, so it goes around the paced write lane even though it is a POST.
+    graphql: HttpClient,
 }
+
+/// Repositories named in one GraphQL query. Each costs a node and two small connections, far
+/// inside GitHub's per-query limits; fifty keeps a query well under its ten-second timeout.
+const GRAPHQL_BATCH: usize = 50;
 
 impl Client {
     /// `base_url` is the web address, e.g. https://github.com.
@@ -94,6 +101,13 @@ impl Client {
             .unwrap_or_else(|_| HeaderValue::from_static("Bearer"));
         auth.set_sensitive(true);
         headers.insert("authorization", auth);
+        let graphql = HttpClient::new(
+            "GitHub",
+            transport.clone(),
+            classify::github_graphql,
+            headers.clone(),
+        )
+        .with_cancel(cancel.clone());
         let http = HttpClient::new("GitHub", transport, classify::github, headers)
             .with_write_lane(WriteLane::new(Duration::from_secs(1)))
             .with_cancel(cancel);
@@ -103,7 +117,175 @@ impl Client {
             org: org.to_string(),
             token,
             http,
+            graphql,
         }
+    }
+
+    /// https://api.github.com/graphql, or <base>/api/graphql on Enterprise Server.
+    fn graphql_url(&self) -> String {
+        match self.api_url.strip_suffix("/api/v3") {
+            Some(base) => format!("{base}/api/graphql"),
+            None => format!("{}/graphql", self.api_url),
+        }
+    }
+
+    /// Looks up to `GRAPHQL_BATCH` repositories up by name in one query, each under an alias
+    /// of its own. A name that does not exist comes back as a null alias and a NOT_FOUND
+    /// error for that alias alone; any other error fails the batch.
+    async fn lookup(&self, names: &[String]) -> Result<Vec<Option<Repo>>, ForgeError> {
+        #[derive(Deserialize)]
+        struct Topic {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct TopicNode {
+            topic: Topic,
+        }
+        #[derive(Deserialize)]
+        struct Topics {
+            #[serde(default, deserialize_with = "super::null_default")]
+            nodes: Vec<TopicNode>,
+        }
+        #[derive(Deserialize)]
+        struct Target {
+            #[serde(default, deserialize_with = "super::null_default")]
+            oid: String,
+        }
+        #[derive(Deserialize)]
+        struct BranchRef {
+            name: String,
+            #[serde(default)]
+            target: Option<Target>,
+        }
+        #[derive(Deserialize)]
+        struct Pull {
+            number: i64,
+            #[serde(default, deserialize_with = "super::null_default")]
+            title: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Pulls {
+            total_count: usize,
+            #[serde(default, deserialize_with = "super::null_default")]
+            nodes: Vec<Pull>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Node {
+            name: String,
+            is_private: bool,
+            is_archived: bool,
+            is_empty: bool,
+            #[serde(default, deserialize_with = "super::null_default")]
+            description: String,
+            #[serde(default)]
+            default_branch_ref: Option<BranchRef>,
+            repository_topics: Topics,
+            pull_requests: Pulls,
+        }
+        #[derive(Deserialize)]
+        struct GqlError {
+            #[serde(rename = "type", default, deserialize_with = "super::null_default")]
+            kind: String,
+            #[serde(default, deserialize_with = "super::null_default")]
+            message: String,
+        }
+        #[derive(Deserialize)]
+        struct Answer {
+            #[serde(default)]
+            data: Option<std::collections::HashMap<String, Option<Node>>>,
+            #[serde(default, deserialize_with = "super::null_default")]
+            errors: Vec<GqlError>,
+        }
+
+        let mut vars = serde_json::Map::new();
+        vars.insert("owner".into(), self.org.clone().into());
+        let mut params = vec!["$owner: String!".to_string()];
+        let mut fields = Vec::with_capacity(names.len());
+        for (i, n) in names.iter().enumerate() {
+            vars.insert(format!("n{i}"), flat_name(n).into());
+            params.push(format!("$n{i}: String!"));
+            fields.push(format!(
+                "r{i}: repository(owner: $owner, name: $n{i}) {{ ...R }}"
+            ));
+        }
+        let query = format!(
+            "query({}) {{ {} }}\n\
+             fragment R on Repository {{ name description isPrivate isArchived isEmpty \
+             defaultBranchRef {{ name target {{ oid }} }} \
+             repositoryTopics(first: 100) {{ nodes {{ topic {{ name }} }} }} \
+             pullRequests(states: OPEN, first: 100) {{ totalCount nodes {{ number title }} }} }}",
+            params.join(", "),
+            fields.join(" ")
+        );
+        let body = serde_json::json!({ "query": query, "variables": vars });
+        let (_, answer): (_, Option<Answer>) = self
+            .graphql
+            .json(
+                Method::POST,
+                &self.graphql_url(),
+                Some(&body),
+                RequestOpts {
+                    idempotent: Some(true), // a query writes nothing
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let answer = answer.ok_or_else(|| ForgeError::msg("graphql: empty answer"))?;
+        if let Some(e) = answer.errors.iter().find(|e| e.kind != "NOT_FOUND") {
+            return Err(ForgeError::msg(format!(
+                "graphql: {}: {}",
+                if e.kind.is_empty() { "error" } else { &e.kind },
+                e.message
+            )));
+        }
+        let mut data = answer
+            .data
+            .ok_or_else(|| ForgeError::msg("graphql: answer without data"))?;
+        Ok(names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let node = data.remove(&format!("r{i}")).flatten()?;
+                // GitHub follows a renamed repository's old name to it. That is not the
+                // repository that was asked for, as in `get`.
+                if !node.name.eq_ignore_ascii_case(&flat_name(name)) {
+                    return None;
+                }
+                let (default_branch, head) = match node.default_branch_ref {
+                    Some(b) => (b.name, b.target.map(|t| t.oid).filter(|o| !o.is_empty())),
+                    None => (String::new(), None),
+                };
+                let pulls = node.pull_requests;
+                Some(Repo {
+                    name: node.name,
+                    default_branch,
+                    visibility: if node.is_private { "private" } else { "public" }.to_string(),
+                    archived: node.is_archived,
+                    empty: node.is_empty,
+                    topics: node
+                        .repository_topics
+                        .nodes
+                        .into_iter()
+                        .map(|t| t.topic.name)
+                        .collect(),
+                    description: node.description,
+                    head,
+                    // More than a page of them: left to `open_requests`, which pages.
+                    open_requests: (pulls.nodes.len() == pulls.total_count).then(|| {
+                        pulls
+                            .nodes
+                            .into_iter()
+                            .map(|p| Request {
+                                number: p.number,
+                                title: p.title,
+                            })
+                            .collect()
+                    }),
+                })
+            })
+            .collect())
     }
 
     /// The API root in use, for tests.
@@ -294,6 +476,7 @@ impl Forge for Client {
     fn caps(&self) -> Caps {
         Caps {
             topics: true,
+            marker: true,
             visibility: true,
             archived_unreadable: false,
             namespace_depth: NamespaceDepth::None,
@@ -325,6 +508,18 @@ impl Forge for Client {
         }
     }
 
+    fn batch_size(&self) -> usize {
+        GRAPHQL_BATCH
+    }
+
+    async fn get_many(&self, names: &[String]) -> Result<Vec<Option<Repo>>, ForgeError> {
+        let mut out = Vec::with_capacity(names.len());
+        for chunk in names.chunks(GRAPHQL_BATCH) {
+            out.extend(self.lookup(chunk).await?);
+        }
+        Ok(out)
+    }
+
     async fn get(&self, name: &str) -> Result<Option<Repo>, ForgeError> {
         #[derive(Deserialize)]
         struct Raw {
@@ -338,6 +533,8 @@ impl Forge for Client {
             archived: bool,
             #[serde(default, deserialize_with = "super::null_default")]
             topics: Vec<String>,
+            #[serde(default, deserialize_with = "super::null_default")]
+            description: String,
         }
         let raw: Raw = match self.json(Method::GET, &self.repo_path(name), None).await {
             Ok((_, Some(raw))) => raw,
@@ -365,6 +562,8 @@ impl Forge for Client {
             archived: raw.archived,
             empty: branches.is_empty(),
             topics: raw.topics,
+            description: raw.description,
+            ..Repo::default()
         }))
     }
 
@@ -376,9 +575,11 @@ impl Forge for Client {
         visibility: &str,
         _default_branch: &str,
         topics: &[String],
+        marker: &str,
     ) -> Result<(), ForgeError> {
         let body = serde_json::json!({
             "name": flat_name(name),
+            "description": marker,
             "private": visibility == "private",
             "auto_init": false,
         });
@@ -393,15 +594,12 @@ impl Forge for Client {
                 },
             )
             .await?;
-        if let Err(e) = self.set_topics(name, topics).await {
-            // Created a moment ago by this very call, so removing it loses nothing -- and
-            // leaving it would strand an unmarked repository that apply refuses to adopt.
-            if let Err(derr) = self.delete(name).await {
-                return Err(ForgeError::msg(format!(
-                    "set topics: {e} (and the new repository could not be removed: {derr})"
-                )));
-            }
-            return Err(ForgeError::msg(format!("set topics: {e}")));
+        // GitHub takes no topics at creation. The marker is already on, so a repository left
+        // without them is drift the next apply repairs, not a stranded one.
+        if !topics.is_empty() {
+            self.set_topics(name, topics)
+                .await
+                .map_err(|e| ForgeError::msg(format!("set topics: {e}")))?;
         }
         Ok(())
     }
@@ -835,22 +1033,28 @@ mod tests {
         assert!(err.to_string().contains("delete_repo"), "{err}");
     }
 
-    /// Create has to leave the repository marked. GitHub takes no topics at creation, so
-    /// they are set next -- and if that fails, what was just created is removed rather than
-    /// stranded.
+    /// The marker goes on with the create, in the same request. GitHub takes topics only
+    /// afterwards, and a failure there leaves a marked repository for the next apply to finish,
+    /// not one to remove.
     #[tokio::test(start_paused = true)]
-    async fn create_sets_topics_or_rolls_back() {
+    async fn create_marks_in_the_same_request() {
         let fail = Arc::new(AtomicBool::new(false));
         let f2 = fail.clone();
+        let posted = Arc::new(Mutex::new(serde_json::Value::Null));
+        let p2 = posted.clone();
         let (c, t) = serve(Box::new(move |r| {
+            if r.method() == "POST" {
+                *p2.lock().unwrap() = body_json(r);
+            }
             if f2.load(Ordering::SeqCst) && r.uri().path().ends_with("/topics") {
                 return reply(422, r#"{"message":"nope"}"#);
             }
             reply(200, "")
         }));
-        c.create("svc", "private", "main", &["forgelab-managed".into()])
+        c.create("svc", "private", "main", &["go".into()], "forgelab-managed")
             .await
             .unwrap();
+        assert_eq!(posted.lock().unwrap()["description"], "forgelab-managed");
         assert_eq!(
             t.seen(),
             [
@@ -861,13 +1065,13 @@ mod tests {
 
         fail.store(true, Ordering::SeqCst);
         t.reset();
-        c.create("svc", "private", "main", &["forgelab-managed".into()])
+        c.create("svc", "private", "main", &["go".into()], "forgelab-managed")
             .await
             .expect_err("want an error when the topics cannot be set");
         assert_eq!(
             t.seen().last().unwrap(),
-            "DELETE /repos/acme-sandbox/svc",
-            "the unmarked repository must be removed"
+            "PUT /repos/acme-sandbox/svc/topics",
+            "nothing deleted: the repository is marked"
         );
     }
 
@@ -1069,5 +1273,180 @@ mod tests {
             None
         );
         assert_eq!(next_link(""), None);
+    }
+
+    /// The answer GraphQL gives for one repository, as `lookup` asks for it.
+    fn node(name: &str, head: Option<&str>, pulls: (usize, &[i64])) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "isPrivate": true,
+            "isArchived": false,
+            "isEmpty": head.is_none(),
+            "defaultBranchRef": head.map(|h| serde_json::json!({"name": "main", "target": {"oid": h}})),
+            "repositoryTopics": {"nodes": [{"topic": {"name": "forgelab-managed"}}, {"topic": {"name": "go"}}]},
+            "pullRequests": {
+                "totalCount": pulls.0,
+                "nodes": pulls.1.iter().map(|n| serde_json::json!({"number": n, "title": "t"})).collect::<Vec<_>>(),
+            },
+        })
+    }
+
+    /// Several names, one request: each under an alias, a missing one answered by a null alias
+    /// and a NOT_FOUND for it alone, a renamed one refused as `get` refuses it.
+    #[tokio::test(start_paused = true)]
+    async fn get_many_looks_names_up_in_one_query() {
+        let (c, t) = serve(Box::new(|r| {
+            let body = body_json(r);
+            let vars = &body["variables"];
+            assert_eq!(vars["owner"], "acme-sandbox");
+            assert_eq!(vars["n0"], "platform-api");
+            assert!(
+                body["query"]
+                    .as_str()
+                    .unwrap()
+                    .contains("r2: repository(owner: $owner, name: $n2)")
+            );
+            reply(
+                200,
+                &serde_json::json!({
+                    "data": {
+                        "r0": node("platform-api", Some("abc"), (1, &[7])),
+                        "r1": null,
+                        "r2": node("renamed-to-this", Some("def"), (0, &[])),
+                        "r3": node("seeded-never", None, (101, &[1])),
+                    },
+                    "errors": [{"type": "NOT_FOUND", "path": ["r1"], "message": "Could not resolve"}],
+                })
+                .to_string(),
+            )
+        }));
+        let names: Vec<String> = ["platform/api", "gone", "old-name", "seeded-never"]
+            .map(String::from)
+            .to_vec();
+        let got = c.get_many(&names).await.unwrap();
+        assert_eq!(t.seen(), ["POST /graphql"]);
+
+        let api = got[0].as_ref().expect("platform/api");
+        assert_eq!(api.default_branch, "main");
+        assert_eq!(api.head.as_deref(), Some("abc"));
+        assert_eq!(api.visibility, "private");
+        assert_eq!(api.topics, ["forgelab-managed", "go"]);
+        assert!(!api.empty);
+        assert_eq!(
+            api.open_requests,
+            Some(vec![Request {
+                number: 7,
+                title: "t".into()
+            }])
+        );
+        assert!(got[1].is_none(), "NOT_FOUND is missing, not an error");
+        assert!(
+            got[2].is_none(),
+            "a redirect is not the repository asked for"
+        );
+        let empty = got[3].as_ref().expect("seeded-never");
+        assert!(empty.empty && empty.head.is_none());
+        assert_eq!(
+            empty.open_requests, None,
+            "more open requests than one page: left to open_requests"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn get_many_batches_by_fifty() {
+        let (c, t) = serve(Box::new(|r| {
+            let vars = body_json(r)["variables"].as_object().unwrap().clone();
+            let data: serde_json::Map<String, serde_json::Value> = vars
+                .iter()
+                .filter_map(|(k, v)| {
+                    let i = k.strip_prefix('n')?;
+                    Some((
+                        format!("r{i}"),
+                        node(v.as_str().unwrap(), Some("abc"), (0, &[])),
+                    ))
+                })
+                .collect();
+            reply(200, &serde_json::json!({ "data": data }).to_string())
+        }));
+        let names: Vec<String> = (0..120).map(|i| format!("svc-{i}")).collect();
+        let got = c.get_many(&names).await.unwrap();
+        assert_eq!(t.seen().len(), 3, "120 names in batches of 50");
+        assert!(got.iter().all(Option::is_some));
+        assert_eq!(got[119].as_ref().unwrap().name, "svc-119");
+    }
+
+    /// Anything but NOT_FOUND is not an answer about one repository: the batch fails.
+    #[tokio::test(start_paused = true)]
+    async fn get_many_fails_on_any_other_error() {
+        let (c, _) = serve(Box::new(|_| {
+            reply(
+                200,
+                r#"{"data":{"r0":null},"errors":[{"type":"FORBIDDEN","path":["r0"],"message":"no"}]}"#,
+            )
+        }));
+        let err = c.get_many(&["svc".into()]).await.unwrap_err();
+        assert!(err.to_string().contains("FORBIDDEN"), "{err}");
+    }
+
+    /// An exhausted GraphQL budget can come back as a 200 that only says so in its errors.
+    #[tokio::test(start_paused = true)]
+    async fn get_many_waits_out_a_graphql_rate_limit() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c2 = calls.clone();
+        let (c, _) = serve(Box::new(move |_| {
+            if c2.fetch_add(1, Ordering::SeqCst) == 0 {
+                return reply(
+                    200,
+                    r#"{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}"#,
+                );
+            }
+            reply(
+                200,
+                &serde_json::json!({"data": {"r0": node("svc", Some("abc"), (0, &[]))}})
+                    .to_string(),
+            )
+        }));
+        let got = c.get_many(&["svc".into()]).await.unwrap();
+        assert!(got[0].is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A query is a read: it does not wait for the paced write lane.
+    #[tokio::test(start_paused = true)]
+    async fn get_many_is_not_paced_as_a_write() {
+        let (c, _) = serve(Box::new(|_| {
+            reply(
+                200,
+                &serde_json::json!({"data": {"r0": node("svc", Some("abc"), (0, &[]))}})
+                    .to_string(),
+            )
+        }));
+        let started = tokio::time::Instant::now();
+        for _ in 0..5 {
+            c.get_many(&["svc".into()]).await.unwrap();
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn graphql_url_follows_the_api_root() {
+        let t = ScriptedTransport::new(|_| reply(200, ""));
+        for (base, want) in [
+            ("https://github.com", "https://api.github.com/graphql"),
+            (
+                "https://ghe.example.test",
+                "https://ghe.example.test/api/graphql",
+            ),
+        ] {
+            let c = Client::new(
+                base,
+                "o",
+                "t".to_string().into(),
+                t.clone(),
+                CancellationToken::new(),
+            )
+            .unwrap();
+            assert_eq!(c.graphql_url(), want, "{base}");
+        }
     }
 }

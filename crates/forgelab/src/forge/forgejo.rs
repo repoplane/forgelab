@@ -198,6 +198,7 @@ impl Forge for Client {
     fn caps(&self) -> Caps {
         Caps {
             topics: true,
+            marker: true,
             visibility: true,
             archived_unreadable: false,
             namespace_depth: NamespaceDepth::None,
@@ -246,6 +247,8 @@ impl Forge for Client {
             archived: bool,
             #[serde(default)]
             empty: bool,
+            #[serde(default, deserialize_with = "super::null_default")]
+            description: String,
         }
         let raw: Raw = match self.get_json(&self.repo_path(name)).await {
             Ok(Some(r)) => r,
@@ -279,6 +282,8 @@ impl Forge for Client {
             archived: raw.archived,
             empty: raw.empty,
             topics: topics.topics,
+            description: raw.description,
+            ..Repo::default()
         }))
     }
 
@@ -288,27 +293,26 @@ impl Forge for Client {
         visibility: &str,
         default_branch: &str,
         topics: &[String],
+        marker: &str,
     ) -> Result<(), ForgeError> {
         self.call(
             Method::POST,
             &format!("/orgs/{}/repos", path_escape(&self.org)),
             Some(&serde_json::json!({
                 "name": flat_name(name),
+                "description": marker,
                 "auto_init": false,
                 "default_branch": default_branch,
                 "private": visibility == "private",
             })),
         )
         .await?;
-        if let Err(e) = self.set_topics(name, topics).await {
-            // Created a moment ago by this very call, so removing it loses nothing -- and leaving
-            // it would strand an unmarked repository that apply refuses to adopt.
-            return match self.delete(name).await {
-                Ok(()) => Err(ForgeError::msg(format!("set topics: {e}"))),
-                Err(derr) => Err(ForgeError::msg(format!(
-                    "set topics: {e} (and the new repository could not be removed: {derr})"
-                ))),
-            };
+        // Forgejo takes no topics at creation. The marker is already on, so a repository left
+        // without them is drift the next apply repairs, not a stranded one.
+        if !topics.is_empty() {
+            self.set_topics(name, topics)
+                .await
+                .map_err(|e| ForgeError::msg(format!("set topics: {e}")))?;
         }
         Ok(())
     }
@@ -488,6 +492,7 @@ mod tests {
     use super::*;
     use crate::forge::ScriptedTransport;
     use bytes::Bytes;
+    use std::sync::Mutex;
 
     fn client(t: Arc<ScriptedTransport>) -> Client {
         Client::new(
@@ -583,30 +588,45 @@ mod tests {
         assert_eq!(t.seen().len(), 2);
     }
 
+    /// The marker goes on with the create, in the same request. Forgejo takes topics only
+    /// afterwards, and a failure there leaves a marked repository for the next apply to finish,
+    /// not one to remove.
     #[tokio::test(start_paused = true)]
-    async fn create_rolls_back_when_the_marker_cannot_be_set() {
-        let t = ScriptedTransport::new(|r| match (r.method().as_str(), r.uri().path()) {
-            ("POST", "/api/v1/orgs/acme/repos") => ScriptedTransport::reply(201, "{}"),
+    async fn create_marks_in_the_same_request() {
+        let posted = Arc::new(Mutex::new(serde_json::Value::Null));
+        let p2 = posted.clone();
+        let t = ScriptedTransport::new(move |r| match (r.method().as_str(), r.uri().path()) {
+            ("POST", "/api/v1/orgs/acme/repos") => {
+                *p2.lock().unwrap() = serde_json::from_slice(r.body()).unwrap();
+                ScriptedTransport::reply(201, "{}")
+            }
             ("PUT", "/api/v1/repos/acme/svc/topics") => {
                 ScriptedTransport::reply(422, r#"{"message":"topics"}"#)
             }
-            ("DELETE", "/api/v1/repos/acme/svc") => ScriptedTransport::reply(204, ""),
             _ => ScriptedTransport::reply(404, ""),
         });
         let c = client(t.clone());
         let err = c
-            .create("svc", "private", "main", &["forgelab-managed".into()])
+            .create("svc", "private", "main", &["go".into()], "forgelab-managed")
             .await
             .unwrap_err();
+        assert_eq!(posted.lock().unwrap()["description"], "forgelab-managed");
         assert!(err.to_string().starts_with("set topics: "), "{err}");
         assert_eq!(
             t.seen(),
             [
                 "POST /api/v1/orgs/acme/repos",
-                "PUT /api/v1/repos/acme/svc/topics",
-                "DELETE /api/v1/repos/acme/svc"
-            ]
+                "PUT /api/v1/repos/acme/svc/topics"
+            ],
+            "nothing deleted: the repository is marked"
         );
+
+        // With no topics to set, the create is the one request.
+        t.reset();
+        c.create("svc", "private", "main", &[], "forgelab-managed")
+            .await
+            .unwrap();
+        assert_eq!(t.seen(), ["POST /api/v1/orgs/acme/repos"]);
     }
 
     #[tokio::test(start_paused = true)]

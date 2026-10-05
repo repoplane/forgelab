@@ -6,6 +6,8 @@ sandboxes:
     base_url: http://localhost:3000
     org: forgelab-sandbox
     token_env: FORGELAB_LOCAL_TOKEN       # the NAME of a variable; `make up` prints the export
+    # marker: forgelab-managed            # the default: what the description of every repository
+    #                                     # forgelab creates starts with, and how it knows its own
 
   # A GitHub sandbox. Uncomment and point it at an org that holds nothing else, with a token
   # that can reach only that org. base_url is only needed for Enterprise Server.

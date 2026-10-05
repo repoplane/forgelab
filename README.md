@@ -182,9 +182,9 @@ sandboxes:
 
 The tokens, the per-forge caveats (a GitLab project cannot be more visible than its group; an
 Azure DevOps repository has no topics and no visibility of its own, and `archived` there means
-`disabled`) and the safety model are unchanged since the Go releases; the
+`disabled`) are unchanged since the Go releases; the
 [v0.12.0 README](https://github.com/repoplane/forgelab/tree/v0.12.0#readme) remains the reference
-for them.
+for them. The marker has moved from a topic to the description: see below.
 
 ## 🧭 How it behaves
 
@@ -198,8 +198,18 @@ to the one the Go releases wrote: the committed locks of `repoplane/fleets` are 
 **🪶 `reset` is cheap and narrow.** It writes only to repositories that drifted, moves refs without
 transferring objects, and *cannot* create or delete a repository — a missing one is exit 2.
 
-**🔒 Safe by construction.** Every repo ForgeLab creates carries a marker topic; a same-named repo
-without it is never adopted, reset or deleted. `destroy` asks before deleting (`--yes` skips it).
+**🐢 Built for thousands.** On GitHub and GitLab, declared repositories are looked up fifty to a
+GraphQL query — still by name, never by listing — so reading a fleet of 2,000 costs about forty
+requests, not thousands. What still takes time is writing: GitHub caps content creation at about
+500 requests an hour, so a first `apply` of a large fleet runs for hours. A long phase says where
+it is on stderr every 30 seconds, rate-limit pauses included. Branch protection is lifted only
+when a push is refused.
+
+**🔒 Safe by construction.** Every repo ForgeLab creates carries a marker at the start of its
+description, set by the very request that creates it; a same-named repo without it is never
+adopted, reset or deleted. Because a repo is never unmarked, not even for a moment, a run
+interrupted anywhere — `kill -9` included — is finished by the next `apply`. Topics are entirely
+the fleet's. `destroy` asks before deleting (`--yes` skips it).
 Credentials never appear on a command line: git receives them as an `Authorization` header
 scoped to the forge's origin.
 

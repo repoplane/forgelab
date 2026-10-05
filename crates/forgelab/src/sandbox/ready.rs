@@ -44,23 +44,44 @@ impl BranchLister for dyn Forge {
 
 impl Env {
     /// Blocks until each repository reports its default branch at the baseline.
+    ///
+    /// Where the forge looks several repositories up at once and says where their default
+    /// branches point, one batched look settles most of them; only those it has not caught up
+    /// with yet are then waited for one at a time.
     pub(crate) async fn wait_ready(&self, repos: &[LockRepo]) -> Result<(), CommandError> {
         let overall = Instant::now() + READY_OVERALL;
         let unreadable = self.forge.caps().archived_unreadable;
-        let results = for_each_collect(
-            repos.to_vec(),
-            self.concurrency,
-            &self.cancel,
-            |want| async move {
+        let mut pending: Vec<LockRepo> = repos.to_vec();
+        if self.forge.batch_size() > 1 {
+            let names: Vec<String> = pending.iter().map(|r| r.name.clone()).collect();
+            // Only a shortcut: if the batched look fails, every repository is waited for.
+            if let Ok(found) = self.lookup(&names).await {
+                pending = pending
+                    .into_iter()
+                    .zip(found)
+                    .filter(|(want, live)| {
+                        !live.as_ref().is_some_and(|l| {
+                            l.default_branch == want.default_branch
+                                && l.head.as_deref() == Some(want.baseline.as_str())
+                        })
+                    })
+                    .map(|(want, _)| want)
+                    .collect();
+            }
+        }
+        self.progress.phase("wait", pending.len());
+        let results =
+            for_each_collect(pending, self.concurrency, &self.cancel, |want| async move {
                 if want.empty || (want.archived && unreadable) {
+                    self.progress.add(1);
                     return (want, Ok(()));
                 }
                 let forge: &dyn Forge = self.forge.as_ref();
                 let r = wait_one(forge, &want, READY_PER_REPO, overall, &self.cancel).await;
+                self.progress.add(1);
                 (want, r)
-            },
-        )
-        .await;
+            })
+            .await;
         aggregate(results, |w| &w.name).map(drop)
     }
 }

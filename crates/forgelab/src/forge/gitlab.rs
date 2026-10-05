@@ -34,6 +34,9 @@ const MAINTAINER_ACCESS: u32 = 40;
 const GONE_POLL: Duration = Duration::from_secs(2);
 
 /// Talks to one group, and to the subgroups the fleet's namespaces map to.
+/// Projects named in one GraphQL query: GitLab refuses more than fifty full paths.
+const GRAPHQL_BATCH: usize = 50;
+
 pub struct Client {
     base_url: String,
     group: String,
@@ -124,6 +127,177 @@ impl Client {
             "/projects/{}",
             path_escape(&format!("{}/{name}", self.group))
         )
+    }
+
+    /// Looks up to `GRAPHQL_BATCH` projects up by full path in one query. A project that does
+    /// not exist, answers under another path (renamed) or is scheduled for deletion is simply
+    /// not in the answer, which is what `get` says of each.
+    ///
+    /// The head it reports is the last commit to touch the default branch's tree, which is the
+    /// branch's own head unless that is an empty commit. It is only ever a shortcut for the
+    /// readiness wait; the comparison against the lock reads refs from git.
+    async fn lookup(&self, names: &[String]) -> Result<Vec<Option<Repo>>, ForgeError> {
+        #[derive(Deserialize)]
+        struct Commit {
+            #[serde(default, deserialize_with = "super::null_default")]
+            sha: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Tree {
+            #[serde(default)]
+            last_commit: Option<Commit>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Repository {
+            #[serde(default)]
+            empty: bool,
+            #[serde(default, deserialize_with = "super::null_default")]
+            root_ref: String,
+            #[serde(default)]
+            tree: Option<Tree>,
+        }
+        #[derive(Deserialize)]
+        struct Mr {
+            iid: String,
+            #[serde(default, deserialize_with = "super::null_default")]
+            title: String,
+        }
+        #[derive(Deserialize)]
+        struct Mrs {
+            count: usize,
+            #[serde(default, deserialize_with = "super::null_default")]
+            nodes: Vec<Mr>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Node {
+            full_path: String,
+            #[serde(default, deserialize_with = "super::null_default")]
+            visibility: String,
+            #[serde(default)]
+            archived: bool,
+            #[serde(default, deserialize_with = "super::null_default")]
+            topics: Vec<String>,
+            #[serde(default, deserialize_with = "super::null_default")]
+            description: String,
+            #[serde(default)]
+            marked_for_deletion_on: Option<String>,
+            #[serde(default)]
+            repository: Option<Repository>,
+            merge_requests: Mrs,
+        }
+        #[derive(Deserialize)]
+        struct Projects {
+            #[serde(default, deserialize_with = "super::null_default")]
+            nodes: Vec<Node>,
+        }
+        #[derive(Deserialize)]
+        struct Data {
+            projects: Option<Projects>,
+        }
+        #[derive(Deserialize)]
+        struct GqlError {
+            #[serde(default, deserialize_with = "super::null_default")]
+            message: String,
+        }
+        #[derive(Deserialize)]
+        struct Answer {
+            #[serde(default)]
+            data: Option<Data>,
+            #[serde(default, deserialize_with = "super::null_default")]
+            errors: Vec<GqlError>,
+        }
+
+        const QUERY: &str = "query($p: [String!]) { projects(fullPaths: $p, first: 50) { nodes { \
+            fullPath visibility archived topics description markedForDeletionOn \
+            repository { empty rootRef tree { lastCommit { sha } } } \
+            mergeRequests(state: opened, first: 100) { count nodes { iid title } } } } }";
+        let paths: Vec<String> = names
+            .iter()
+            .map(|n| format!("{}/{n}", self.group))
+            .collect();
+        let body = serde_json::json!({ "query": QUERY, "variables": { "p": paths } });
+        let (_, answer): (_, Option<Answer>) = self
+            .http
+            .json(
+                Method::POST,
+                &format!("{}/api/graphql", self.base_url),
+                Some(&body),
+                RequestOpts {
+                    idempotent: Some(true), // a query writes nothing
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let answer = answer.ok_or_else(|| ForgeError::msg("graphql: empty answer"))?;
+        if let Some(e) = answer.errors.first() {
+            return Err(ForgeError::msg(format!("graphql: {}", e.message)));
+        }
+        let nodes = answer
+            .data
+            .and_then(|d| d.projects)
+            .ok_or_else(|| ForgeError::msg("graphql: answer without projects"))?
+            .nodes;
+        let mut by_path: std::collections::HashMap<String, Node> = nodes
+            .into_iter()
+            .map(|n| (n.full_path.to_lowercase(), n))
+            .collect();
+        let mut out = Vec::with_capacity(names.len());
+        for (name, path) in names.iter().zip(&paths) {
+            let Some(n) = by_path.remove(&path.to_lowercase()) else {
+                out.push(None);
+                continue;
+            };
+            if n.marked_for_deletion_on.is_some() {
+                out.push(None);
+                continue;
+            }
+            let repo = n.repository.unwrap_or(Repository {
+                empty: true,
+                root_ref: String::new(),
+                tree: None,
+            });
+            // GitLab's "empty" is updated after a push, not by it. `get` knows how to ask the
+            // repository itself, and an empty project is rare enough to ask it one at a time.
+            if repo.empty {
+                out.push(self.get(name).await?);
+                continue;
+            }
+            let mrs = n.merge_requests;
+            let open_requests = if mrs.nodes.len() == mrs.count {
+                let mut v = Vec::with_capacity(mrs.nodes.len());
+                for m in mrs.nodes {
+                    let number = m.iid.parse::<i64>().map_err(|e| {
+                        ForgeError::msg(format!("graphql: merge request iid {:?}: {e}", m.iid))
+                    })?;
+                    v.push(Request {
+                        number,
+                        title: m.title,
+                    });
+                }
+                Some(v)
+            } else {
+                None // more than one page of them: left to `open_requests`, which pages
+            };
+            out.push(Some(Repo {
+                name: name.clone(),
+                default_branch: repo.root_ref,
+                visibility: n.visibility,
+                archived: n.archived,
+                empty: false,
+                topics: n.topics,
+                description: n.description,
+                head: repo
+                    .tree
+                    .and_then(|t| t.last_commit)
+                    .map(|c| c.sha)
+                    .filter(|s| !s.is_empty()),
+                open_requests,
+            }));
+        }
+        Ok(out)
     }
 
     async fn json<T: DeserializeOwned>(
@@ -443,6 +617,7 @@ impl Forge for Client {
     fn caps(&self) -> Caps {
         Caps {
             topics: true,
+            marker: true,
             visibility: true,
             archived_unreadable: false,
             namespace_depth: NamespaceDepth::Any,
@@ -459,6 +634,18 @@ impl Forge for Client {
     /// Only checks: on gitlab.com a top-level group cannot be created through the API.
     async fn ensure_org(&self) -> Result<(), ForgeError> {
         self.group_of("", false).await.map(drop)
+    }
+
+    fn batch_size(&self) -> usize {
+        GRAPHQL_BATCH
+    }
+
+    async fn get_many(&self, names: &[String]) -> Result<Vec<Option<Repo>>, ForgeError> {
+        let mut out = Vec::with_capacity(names.len());
+        for chunk in names.chunks(GRAPHQL_BATCH) {
+            out.extend(self.lookup(chunk).await?);
+        }
+        Ok(out)
     }
 
     async fn get(&self, name: &str) -> Result<Option<Repo>, ForgeError> {
@@ -482,6 +669,8 @@ impl Forge for Client {
             topics: Vec<String>,
             #[serde(default, rename = "marked_for_deletion_on")]
             deleting: Option<String>,
+            #[serde(default, deserialize_with = "super::null_default")]
+            description: String,
         }
         let raw: Raw = match self.json(Method::GET, &self.project(name), None).await {
             Ok(Some(raw)) => raw,
@@ -505,6 +694,8 @@ impl Forge for Client {
             archived: raw.archived,
             empty: raw.empty_repo,
             topics: raw.topics,
+            description: raw.description,
+            ..Repo::default()
         };
         // empty_repo is updated after a push, not by it. When it claims "empty", ask the
         // repository itself, so that a project seeded a moment ago is not reported as unseeded.
@@ -532,6 +723,7 @@ impl Forge for Client {
         visibility: &str,
         _default_branch: &str,
         topics: &[String],
+        marker: &str,
     ) -> Result<(), ForgeError> {
         let (ns, leaf) = split_namespace(name);
         let g = self.group_of(ns, true).await?.ok_or_else(|| {
@@ -549,6 +741,7 @@ impl Forge for Client {
             "namespace_id": g.id,
             "visibility": visibility,
             "topics": topics,
+            "description": marker,
             "initialize_with_readme": false,
         });
         self.http
@@ -1224,9 +1417,15 @@ mod tests {
             *b2.lock().unwrap() = body_json(r);
             reply(200, "")
         }));
-        c.create("svc", "private", "master", &["forgelab-managed".into()])
-            .await
-            .unwrap();
+        c.create(
+            "svc",
+            "private",
+            "master",
+            &["forgelab-managed".into()],
+            "forgelab-managed",
+        )
+        .await
+        .unwrap();
         {
             let b = body.lock().unwrap();
             assert!(
@@ -1237,7 +1436,9 @@ mod tests {
                 "create: {b}"
             );
         }
-        c.create("other", "public", "main", &[]).await.unwrap();
+        c.create("other", "public", "main", &[], "forgelab-managed")
+            .await
+            .unwrap();
         assert_eq!(
             t.seen().iter().filter(|s| s.contains("/groups/")).count(),
             1,
@@ -1380,12 +1581,24 @@ mod tests {
                 }
             }
         }));
-        c.create("platform/core/api", "private", "main", &[])
-            .await
-            .unwrap();
-        c.create("platform/core/cli", "private", "main", &[])
-            .await
-            .unwrap();
+        c.create(
+            "platform/core/api",
+            "private",
+            "main",
+            &[],
+            "forgelab-managed",
+        )
+        .await
+        .unwrap();
+        c.create(
+            "platform/core/cli",
+            "private",
+            "main",
+            &[],
+            "forgelab-managed",
+        )
+        .await
+        .unwrap();
         let posts = posts.lock().unwrap();
         assert_eq!(posts.len(), 4, "{posts:?}");
         assert_eq!(
@@ -1433,8 +1646,14 @@ mod tests {
         for i in 0..8 {
             let c = c.clone();
             tasks.spawn(async move {
-                c.create(&format!("platform/svc{i}"), "private", "main", &[])
-                    .await
+                c.create(
+                    &format!("platform/svc{i}"),
+                    "private",
+                    "main",
+                    &[],
+                    "forgelab-managed",
+                )
+                .await
             });
         }
         while let Some(r) = tasks.join_next().await {
@@ -1594,7 +1813,9 @@ mod tests {
                 _ => reply(404, ""),
             }
         }));
-        c.create("core/api", "private", "main", &[]).await.unwrap();
+        c.create("core/api", "private", "main", &[], "forgelab-managed")
+            .await
+            .unwrap();
         {
             let posts = posts.lock().unwrap();
             assert_eq!(posts.len(), 2, "{posts:?}");
@@ -1616,7 +1837,7 @@ mod tests {
             ),
         }));
         let err = c
-            .create("core/api", "private", "main", &[])
+            .create("core/api", "private", "main", &[], "forgelab-managed")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("pending deletion"), "{err}");
@@ -1630,5 +1851,98 @@ mod tests {
             err.to_string(),
             "group \"acme-sandbox/services\" does not exist, or the token cannot see it"
         );
+    }
+
+    fn project(path: &str, empty: bool, mrs: (usize, &[&str])) -> serde_json::Value {
+        serde_json::json!({
+            "fullPath": path,
+            "visibility": "private",
+            "archived": false,
+            "topics": ["go", "forgelab-managed"],
+            "markedForDeletionOn": null,
+            "repository": {"empty": empty, "rootRef": if empty { None } else { Some("main") },
+                           "tree": if empty { None } else { Some(serde_json::json!({"lastCommit": {"sha": "abc"}})) }},
+            "mergeRequests": {"count": mrs.0, "nodes": mrs.1.iter().map(|i| serde_json::json!({"iid": i, "title": "t"})).collect::<Vec<_>>()},
+        })
+    }
+
+    /// Fifty full paths to a query; whatever is not in the answer -- missing, renamed, being
+    /// deleted -- is missing, and a project that says it is empty is asked again by REST,
+    /// which knows how to tell an unseeded project from one seeded a moment ago.
+    #[tokio::test(start_paused = true)]
+    async fn get_many_looks_projects_up_by_full_path() {
+        let (c, t) = serve(Box::new(|r| {
+            if r.uri().path() == "/api/graphql" {
+                let paths = body_json(r)["variables"]["p"].clone();
+                assert_eq!(paths[0], "acme-sandbox/services/platform/api");
+                let mut deleting = project("acme-sandbox/services/doomed", false, (0, &[]));
+                deleting["markedForDeletionOn"] = "2026-10-02".into();
+                return reply(
+                    200,
+                    &serde_json::json!({"data": {"projects": {"nodes": [
+                        project("acme-sandbox/services/Platform/API", false, (1, &["7"])),
+                        deleting,
+                        project("acme-sandbox/services/fresh", true, (0, &[])),
+                        project("acme-sandbox/services/busy", false, (150, &["1"])),
+                    ]}}})
+                    .to_string(),
+                );
+            }
+            // `get` asking about the one that claimed to be empty.
+            match r.uri().path() {
+                "/api/v4/projects/acme-sandbox%2Fservices%2Ffresh" => reply(
+                    200,
+                    r#"{"path_with_namespace":"acme-sandbox/services/fresh","default_branch":"main","visibility":"private","empty_repo":true,"topics":["forgelab-managed"]}"#,
+                ),
+                "/api/v4/projects/acme-sandbox%2Fservices%2Ffresh/repository/branches" => {
+                    reply(200, r#"[{"name":"main","commit":{"id":"abc"}}]"#)
+                }
+                other => panic!("unexpected {other}"),
+            }
+        }));
+        let names: Vec<String> = ["platform/api", "gone", "doomed", "fresh", "busy"]
+            .map(String::from)
+            .to_vec();
+        let got = c.get_many(&names).await.unwrap();
+        assert_eq!(t.seen()[0], "POST /api/graphql");
+
+        let api = got[0].as_ref().expect("matched case-insensitively");
+        assert_eq!(api.name, "platform/api");
+        assert_eq!(api.default_branch, "main");
+        assert_eq!(api.head.as_deref(), Some("abc"));
+        assert_eq!(api.topics, ["go", "forgelab-managed"]);
+        assert_eq!(
+            api.open_requests,
+            Some(vec![Request {
+                number: 7,
+                title: "t".into()
+            }])
+        );
+        assert!(got[1].is_none(), "not in the answer");
+        assert!(got[2].is_none(), "scheduled for deletion");
+        let fresh = got[3].as_ref().expect("fresh");
+        assert!(!fresh.empty, "REST found its branch: seeded a moment ago");
+        assert_eq!(
+            got[4].as_ref().unwrap().open_requests,
+            None,
+            "more than a page"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn get_many_batches_by_fifty_and_fails_on_errors() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c2 = calls.clone();
+        let (c, _) = serve(Box::new(move |r| {
+            assert!(body_json(r)["variables"]["p"].as_array().unwrap().len() <= 50);
+            if c2.fetch_add(1, Ordering::SeqCst) == 2 {
+                return reply(200, r#"{"errors":[{"message":"boom"}]}"#);
+            }
+            reply(200, r#"{"data":{"projects":{"nodes":[]}}}"#)
+        }));
+        let names: Vec<String> = (0..120).map(|i| format!("svc-{i}")).collect();
+        let err = c.get_many(&names).await.unwrap_err();
+        assert!(err.to_string().contains("boom"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "120 names, batches of 50");
     }
 }

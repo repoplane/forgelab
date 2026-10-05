@@ -404,10 +404,7 @@ impl Lab {
         self.must_api(
             "PUT",
             &format!("{}/topics", self.repo("parser-svc")),
-            &format!(
-                r#"{{"topics":[{:?},"changed"]}}"#,
-                forgelab::sandbox::DEFAULT_MARKER_TOPIC
-            ),
+            r#"{"topics":["changed"]}"#,
         )
         .await;
     }

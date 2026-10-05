@@ -34,6 +34,15 @@ pub struct Repo {
     /// The forge holds no commits for it.
     pub empty: bool,
     pub topics: Vec<String>,
+    /// Where forgelab's marker goes (`Caps::marker`): a repository whose description starts
+    /// with the sandbox's marker is one forgelab created.
+    pub description: String,
+    /// The commit the default branch points at, when the lookup that found the repository
+    /// also said. `None` means "not asked", never "no commits" -- that is `empty`.
+    pub head: Option<String>,
+    /// The open requests, when the lookup that found the repository also said. `None` means
+    /// "not asked": `open_requests` is then the way to know.
+    pub open_requests: Option<Vec<Request>>,
 }
 
 /// A branch or a tag and the commit it points at.
@@ -77,11 +86,13 @@ impl NamespaceDepth {
 /// hold, rather than demand a different fleet for it: one fleet, one lock, every forge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
-    /// Repositories carry topics. Without them there is nowhere to put the marker either, so
-    /// the "never adopt a repository forgelab did not create" guard is off: there, a
-    /// repository with a declared name is forgelab's, and only the sandbox's own
-    /// configuration and the reach of its token keep it in the right place.
+    /// Repositories carry topics.
     pub topics: bool,
+    /// Repositories carry a description, and so forgelab's marker. Without one the "never
+    /// adopt a repository forgelab did not create" guard is off: there, a repository with a
+    /// declared name is forgelab's, and only the sandbox's own configuration and the reach of
+    /// its token keep it in the right place.
+    pub marker: bool,
     /// Visibility is set per repository (not per project).
     pub visibility: bool,
     /// An archived repository cannot be read at all -- not its refs, not its requests.
@@ -90,9 +101,9 @@ pub struct Caps {
     pub namespace_depth: NamespaceDepth,
 }
 
-/// The description of every namespace `create` makes. Groups and projects carry no topics,
-/// so this is their marker, and it says what the topic says of a repository: work in it
-/// freely, and expect forgelab to remove it, with all it holds, and seed it again.
+/// The description of every namespace `create` makes, as the sandbox's marker is of every
+/// repository: work in it freely, and expect forgelab to remove it, with all it holds, and
+/// seed it again.
 pub const NAMESPACE_MARKER: &str = "forgelab-managed";
 
 /// A partial update: `None` fields are left alone.
@@ -131,7 +142,8 @@ pub fn flat_name(name: &str) -> String {
 
 /// A `Forge` is bound to one organisation. Every method addresses a repository by name
 /// inside it. There is deliberately no list: forgelab looks declared repositories up by name
-/// and never enumerates the organisation, so what it did not declare it cannot see.
+/// and never enumerates the organisation, so what it did not declare it cannot see. Looking
+/// several up at once (`get_many`) is still looking them up by name.
 ///
 /// A name is the repository's path in the fleet, "platform/core/api": the namespaces it sits
 /// in, then the repository. Each forge lands it where it can -- subgroups on GitLab, a
@@ -154,16 +166,36 @@ pub trait Forge: Send + Sync {
     /// (forges redirect the old name of a renamed repository).
     async fn get(&self, name: &str) -> Result<Option<Repo>, ForgeError>;
 
-    /// Must not return success with the topics unset: they carry the marker that tells
-    /// forgelab the repository is its own, and an unmarked repository is one that a re-run of
-    /// apply will refuse to touch. A forge that cannot set them in the same call sets them
-    /// next, and deletes what it just created if that fails.
+    /// How many names `get_many` takes in one call. One means the forge has no way to look
+    /// several repositories up at once.
+    fn batch_size(&self) -> usize {
+        1
+    }
+
+    /// `get` for up to `batch_size` names at once, answering in the same order and with the
+    /// same answers `get` would give. A forge that can name several repositories in one request
+    /// does -- on a rate-limited forge that is the difference between one request per
+    /// repository and one per batch. It is still a lookup by name: nothing is enumerated.
+    async fn get_many(&self, names: &[String]) -> Result<Vec<Option<Repo>>, ForgeError> {
+        let mut out = Vec::with_capacity(names.len());
+        for n in names {
+            out.push(self.get(n).await?);
+        }
+        Ok(out)
+    }
+
+    /// Creates the repository with `marker` as its description, in the same request: a
+    /// repository forgelab created is never without the marker, however the run that created
+    /// it ended, so the next run always recognises it as its own and finishes it. The topics
+    /// go with the create where the forge takes them, and right after where it does not; a
+    /// repository left without them is drift that the next apply repairs.
     async fn create(
         &self,
         name: &str,
         visibility: &str,
         default_branch: &str,
         topics: &[String],
+        marker: &str,
     ) -> Result<(), ForgeError>;
 
     /// Removes the repository. One that is already gone is not an error: a destroy that is

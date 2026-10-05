@@ -9,7 +9,7 @@ use crate::util::go_slice;
 
 use super::pool::for_each_collect;
 use super::report::{CommandError, aggregate};
-use super::{Env, with_marker, without_marker};
+use super::{Env, sorted};
 
 /// What apply would do to one declared repository.
 pub(crate) struct Change {
@@ -66,15 +66,47 @@ impl Env {
                 .ensure_org()
                 .await
                 .map_err(|e| CommandError::Other(format!("org {}: {e}", self.sandbox.org)))?;
+            self.progress.phase("apply", todo.len());
             let results =
                 for_each_collect(todo, self.concurrency, &self.cancel, |mut c| async move {
                     let r = self.apply_one(&mut c).await;
-                    if r.is_ok() {
-                        self.debugf(format!("  applied {}\n", c.repo.name));
-                    }
+                    self.progress.add(1);
                     (c, r)
                 })
                 .await;
+            let todo = aggregate(results, |c| &c.repo.name)?;
+
+            // What the repositories just created look like now that they hold their seed: read
+            // back, all at once, rather than written blindly. Their visibility came with the
+            // create and their default branch with the first push, and on GitHub that saves one
+            // paced write in three.
+            let created: Vec<String> = todo
+                .iter()
+                .filter(|c| c.create)
+                .map(|c| c.repo.name.clone())
+                .collect();
+            let mut fresh: HashMap<String, forge::Repo> = HashMap::new();
+            for (name, r) in created.iter().zip(self.lookup(&created).await?) {
+                if let Some(r) = r {
+                    fresh.insert(name.clone(), r);
+                }
+            }
+            let fresh = &fresh;
+            self.progress.phase("settle", todo.len());
+            let results = for_each_collect(todo, self.concurrency, &self.cancel, |c| async move {
+                let current = if c.create {
+                    fresh.get(&c.repo.name).cloned()
+                } else {
+                    c.live.clone()
+                };
+                let r = self.settle_one(&c, current).await;
+                self.progress.add(1);
+                if r.is_ok() {
+                    self.debugf(format!("  applied {}\n", c.repo.name));
+                }
+                (c, r)
+            })
+            .await;
             aggregate(results, |c| &c.repo.name)?;
             let _ = todo_names;
         }
@@ -100,14 +132,6 @@ impl Env {
 
         let mut changes: Vec<Change> = Vec::with_capacity(spec.repos.len());
         for r in &spec.repos {
-            // The marker belongs to the sandbox. A fleet that declared it too would make the
-            // topic comparison unable to tell the two apart.
-            if r.topics.iter().any(|t| t == &self.sandbox.marker_topic) {
-                return Err(CommandError::Other(format!(
-                    "{}: topic {:?} is the sandbox marker and may not be declared",
-                    r.name, self.sandbox.marker_topic
-                )));
-            }
             changes.push(Change {
                 repo: r.clone(),
                 built: None,
@@ -129,11 +153,13 @@ impl Env {
             )
             .max(1);
         let git = &spec.git;
+        self.progress.phase("build", changes.len());
         let results = for_each_collect(changes, builders, &self.cancel, |mut c| async move {
             if c.repo.empty {
                 return (c, Ok(()));
             }
             let r = seed::build(self.root(), &c.repo, git).await;
+            self.progress.add(1);
             match r {
                 Ok(b) => {
                     c.built = Some(b);
@@ -153,34 +179,41 @@ impl Env {
         }
         let lock = Lock::new(&spec, &digest, &baselines);
 
+        let names: Vec<String> = changes.iter().map(|c| c.repo.name.clone()).collect();
+        let found = self.lookup(&names).await?;
         let previous = &previous;
         let results = for_each_collect(
-            changes,
+            changes.into_iter().zip(found).collect(),
             self.concurrency,
             &self.cancel,
-            |mut c| async move {
-                let r = self.diff_one(&mut c, previous.as_ref()).await;
-                (c, r)
+            |(mut c, live)| async move {
+                let r = self.diff_one(&mut c, live, previous.as_ref()).await;
+                ((c, None), r)
             },
         )
         .await;
-        let changes = aggregate(results, |c| &c.repo.name)?;
+        let changes = aggregate(results, |(c, _)| &c.repo.name)?
+            .into_iter()
+            .map(|(c, _): (Change, Option<forge::Repo>)| c)
+            .collect();
         Ok((lock, changes))
     }
 
-    async fn diff_one(&self, c: &mut Change, previous: Option<&Lock>) -> Result<(), CommandError> {
+    async fn diff_one(
+        &self,
+        c: &mut Change,
+        live: Option<forge::Repo>,
+        previous: Option<&Lock>,
+    ) -> Result<(), CommandError> {
         let want = c.repo.clone();
-        let Some(live) = self.forge.get(&want.name).await? else {
+        let Some(live) = live else {
             c.create = true;
             return Ok(());
         };
         let caps = self.forge.caps();
         // A repository with this name that forgelab did not create is somebody else's.
-        if caps.topics && !live.topics.iter().any(|t| t == &self.sandbox.marker_topic) {
-            return Err(CommandError::Guard(format!(
-                "{}/{} already exists without the {:?} topic: it is not forgelab's, and apply never adopts. Rename the fixture or remove that repository",
-                self.sandbox.org, want.name, self.sandbox.marker_topic
-            )));
+        if !self.is_ours(&live) {
+            return Err(CommandError::Guard(self.never_adopts(&want.name)));
         }
 
         if caps.visibility && live.visibility != want.visibility {
@@ -193,7 +226,7 @@ impl Env {
             c.notes
                 .push(format!("archived: {} → {}", live.archived, want.archived));
         }
-        let got = without_marker(&live.topics, &self.sandbox.marker_topic);
+        let got = sorted(&live.topics);
         if caps.topics && got != want.topics {
             c.notes.push(format!(
                 "topics: {} → {}",
@@ -219,16 +252,18 @@ impl Env {
             c.live = Some(live);
             return Ok(());
         }
+        if live.empty {
+            c.push = true; // created by an interrupted apply, never seeded
+            c.live = Some(live);
+            return Ok(());
+        }
+        // Only once there is a commit: a forge may report the default branch of an empty
+        // repository as the instance default, or as nothing at all.
         if live.default_branch != want.default_branch {
             c.notes.push(format!(
                 "default branch: {} → {}",
                 live.default_branch, want.default_branch
             ));
-        }
-        if live.empty {
-            c.push = true; // created by an interrupted apply, never seeded
-            c.live = Some(live);
-            return Ok(());
         }
         let remote = self.git_remote(&want.name)?;
         let (branches, tags) = seed::ls_remote(&remote).await?;
@@ -273,16 +308,16 @@ impl Env {
     async fn apply_one(&self, c: &mut Change) -> Result<(), CommandError> {
         let want = c.repo.clone();
         let name = want.name.as_str();
-        let marker = self.sandbox.marker_topic.as_str();
 
         if c.create {
-            // The marker goes on with the creation, before any content: an interrupted apply
+            // The marker goes on with the creation, in the same request: an interrupted apply
             // leaves repositories behind, and the re-run has to recognise them as its own.
             self.create_verified(
                 name,
                 &want.visibility,
                 &want.default_branch,
-                &with_marker(&want.topics, marker),
+                &want.topics,
+                c.built.is_some(),
             )
             .await
             .map_err(|e| match e {
@@ -292,9 +327,8 @@ impl Env {
         }
 
         // An archived repository rejects every write, so it is lifted for the duration and
-        // restored last.
-        let mut live_archived = c.live.as_ref().is_some_and(|l| l.archived);
-        if live_archived {
+        // restored last, in `settle_one`.
+        if c.live.as_ref().is_some_and(|l| l.archived) {
             self.forge
                 .update_settings(
                     name,
@@ -305,7 +339,6 @@ impl Env {
                 )
                 .await
                 .map_err(|e| CommandError::Other(format!("unarchive: {e}")))?;
-            live_archived = false;
         }
 
         if c.recheck
@@ -320,28 +353,27 @@ impl Env {
         if (c.create || c.push)
             && let Some(b) = &c.built
         {
-            // Every seed is a force-push, the first one included, so the lift is unconditional:
-            // the branch this is about to write can already be protected even on a repository
-            // created moments ago, because a forge may protect a default branch the instant it
-            // names one.
-            self.forge
-                .allow_force_push(name, &want.default_branch)
-                .await
-                .map_err(|e| CommandError::Other(format!("allow force-push: {e}")))?;
             let remote = self.git_remote(name)?;
-            self.push_seed(b, &remote, name, c.create).await?;
+            self.force_push(name, &want.default_branch, || {
+                self.push_seed(b, &remote, name, c.create)
+            })
+            .await?;
         }
+        Ok(())
+    }
 
-        // Only what differs is written. Writes are what a forge rate-limits -- GitHub paces
-        // them a second apart -- while reads are cheap, so a repository just created and seeded
-        // is read back rather than written blindly: its visibility came with the create and its
-        // default branch with the first push, and on GitHub that saves one paced write in three.
+    /// The second half of applying one repository, once every repository has its content:
+    /// the settings, then what depends on them, then archiving. Only what differs is written:
+    /// writes are what a forge rate-limits -- GitHub paces them a second apart -- and reads are
+    /// cheap. `current` is the repository as last read.
+    async fn settle_one(
+        &self,
+        c: &Change,
+        current: Option<forge::Repo>,
+    ) -> Result<(), CommandError> {
+        let want = &c.repo;
+        let name = want.name.as_str();
         let caps = self.forge.caps();
-        let current = if c.create {
-            self.forge.get(name).await.ok().flatten()
-        } else {
-            c.live.clone()
-        };
         let mut settings = Settings::default();
         if caps.visibility
             && current
@@ -365,15 +397,13 @@ impl Env {
                 .await
                 .map_err(|e| CommandError::Other(format!("settings: {e}")))?;
         }
-        // Topics went on with the create. Otherwise they are set when they differ, the marker
-        // included.
-        let topics_differ = current.as_ref().is_none_or(|l| {
-            !l.topics.iter().any(|t| t == marker)
-                || without_marker(&l.topics, marker) != want.topics
-        });
-        if !c.create && caps.topics && topics_differ {
+        // Set when they differ -- a create sets them, and so normally leaves nothing to do.
+        let topics_differ = current
+            .as_ref()
+            .is_none_or(|l| sorted(&l.topics) != want.topics);
+        if caps.topics && topics_differ {
             self.forge
-                .set_topics(name, &with_marker(&want.topics, marker))
+                .set_topics(name, &want.topics)
                 .await
                 .map_err(|e| CommandError::Other(format!("set topics: {e}")))?;
         }
@@ -383,7 +413,8 @@ impl Env {
                 .await
                 .map_err(|e| CommandError::Other(format!("remove stale refs: {e}")))?;
         }
-        if want.archived != live_archived {
+        // Unarchived by `apply_one` if it was archived, so archived now only if it should be.
+        if want.archived {
             self.forge
                 .update_settings(
                     name,
@@ -396,6 +427,38 @@ impl Env {
                 .map_err(|e| CommandError::Other(format!("archive: {e}")))?;
         }
         Ok(())
+    }
+
+    /// Force-pushes, and lifts whatever protects `branch` only if the forge refused the push.
+    /// Every seed and every reset is a force-push, and on a repository nothing protects -- a
+    /// sandbox's, normally -- asking first costs two reads per push for nothing. A refused push
+    /// is lifted and made again: by the forge itself (GitLab protects a default branch on first
+    /// push), by an interrupted apply, or by the test that just ran.
+    pub(crate) async fn force_push<F, Fut>(
+        &self,
+        name: &str,
+        branch: &str,
+        push: F,
+    ) -> Result<(), CommandError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<(), CommandError>>,
+    {
+        let refused = match push().await {
+            Ok(()) => return Ok(()),
+            Err(e) if self.cancel.is_cancelled() => return Err(e),
+            Err(e) => e,
+        };
+        tracing::debug!(
+            name,
+            "push refused, lifting what protects {branch}: {refused}"
+        );
+        if let Err(e) = self.forge.allow_force_push(name, branch).await {
+            return Err(CommandError::Other(format!(
+                "{refused} (and lifting what protects {branch} failed: {e})"
+            )));
+        }
+        push().await
     }
 
     /// Pushes the seed. A repository created a moment ago can be known to the forge's API and
@@ -461,6 +524,14 @@ impl Env {
         }
     }
 
+    /// The guard failure for a declared name that somebody else's repository already holds.
+    fn never_adopts(&self, name: &str) -> String {
+        format!(
+            "{}/{name} already exists without the {:?} marker in its description: it is not forgelab's, and apply never adopts. Rename the fixture or remove that repository",
+            self.sandbox.org, self.sandbox.marker
+        )
+    }
+
     /// Creates a repository, and does not take the forge's first word for a failure that
     /// may not be one:
     ///
@@ -471,22 +542,33 @@ impl Env {
     ///   was answered from a cache that had not caught up. It is then treated exactly as the
     ///   plan would have: forgelab's own if it carries the marker, somebody else's otherwise.
     ///
-    /// One that did land is finished the way `Forge::create` would have: with its topics set,
-    /// so the marker is on it.
+    /// One that did land carries the marker -- it went on with the create -- and is finished
+    /// the way `Forge::create` would have: with its topics set.
+    ///
+    /// When a push follows, the push is what waits for a repository the forge has not caught
+    /// up with yet (`push_seed`); only an empty one is waited for here.
     async fn create_verified(
         &self,
         name: &str,
         visibility: &str,
         default_branch: &str,
         topics: &[String],
+        push_follows: bool,
     ) -> Result<(), CommandError> {
         let mut wait = std::time::Duration::from_secs(1);
         for attempt in 1..=5 {
             let err = match self
                 .forge
-                .create(name, visibility, default_branch, topics)
+                .create(
+                    name,
+                    visibility,
+                    default_branch,
+                    topics,
+                    &self.sandbox.marker,
+                )
                 .await
             {
+                Ok(()) if push_follows => return Ok(()),
                 Ok(()) => return self.wait_created(name).await,
                 Err(e) => e,
             };
@@ -497,7 +579,10 @@ impl Env {
                         attempt,
                         "create answered a transient failure, checking whether it landed: {err}"
                     );
-                    if self.forge.get(name).await?.is_some() {
+                    if let Some(live) = self.forge.get(name).await? {
+                        if !self.is_ours(&live) {
+                            return Err(CommandError::Guard(self.never_adopts(name)));
+                        }
                         return Ok(self.forge.set_topics(name, topics).await?);
                     }
                     tokio::select! {
@@ -510,13 +595,8 @@ impl Env {
                     let Some(live) = self.get_confirmed(name).await? else {
                         return Err(err.into());
                     };
-                    if self.forge.caps().topics
-                        && !live.topics.iter().any(|t| t == &self.sandbox.marker_topic)
-                    {
-                        return Err(CommandError::Guard(format!(
-                            "{}/{} already exists without the {:?} topic: it is not forgelab's, and apply never adopts. Rename the fixture or remove that repository",
-                            self.sandbox.org, name, self.sandbox.marker_topic
-                        )));
+                    if !self.is_ours(&live) {
+                        return Err(CommandError::Guard(self.never_adopts(name)));
                     }
                     tracing::debug!(
                         name,
@@ -538,9 +618,9 @@ impl Env {
     fn print_plan_refs(&self, verb: &str, changes: &[&Change]) {
         self.header(verb, changes.len());
         let caps = self.forge.caps();
-        if !caps.topics || !caps.visibility {
+        if !caps.topics || !caps.visibility || !caps.marker {
             self.printf(format!(
-                "  note: {} has no repository topics or per-repository visibility. Those fleet\n        settings are ignored here, and with no topic to carry it so is the marker guard:\n        a repository with a declared name is treated as forgelab's.\n\n",
+                "  note: {} has no repository topics, descriptions or per-repository visibility.\n        Those fleet settings are ignored here, and with no description to carry it so is\n        the marker guard: a repository with a declared name is treated as forgelab's.\n\n",
                 self.sandbox.forge
             ));
         }

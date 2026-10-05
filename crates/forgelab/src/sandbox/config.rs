@@ -13,7 +13,7 @@ pub const CONFIG_FILE: &str = "sandboxes.yaml";
 /// Set on every repository forgelab creates. It is how forgelab tells its own repositories
 /// from a same-named stranger, and how a consumer can filter an organisation listing down to
 /// the fleet.
-pub const DEFAULT_MARKER_TOPIC: &str = "forgelab-managed";
+pub const DEFAULT_MARKER: &str = "forgelab-managed";
 
 const CONFIG_VERSION: i64 = 1;
 
@@ -58,7 +58,7 @@ pub struct Sandbox {
     #[serde(default)]
     pub token_env: String,
     #[serde(default)]
-    pub marker_topic: String,
+    pub marker: String,
     /// How many repositories to work on at once; the forge's own default when absent.
     #[serde(default)]
     pub concurrency: Option<usize>,
@@ -74,9 +74,9 @@ fn is_sandbox_name(s: &str) -> bool {
     crate::fleet::spec::is_repo_name(s)
 }
 
-/// A marker topic as forges store one: lowercase letters, digits, '.' and '-', 50 characters
-/// at most.
-fn is_marker_topic(s: &str) -> bool {
+/// A marker: lowercase letters, digits, '.' and '-', 50 characters at most. It is what the
+/// description of every repository forgelab creates starts with.
+fn is_marker(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
@@ -153,16 +153,16 @@ impl Config {
         };
         let mut sb = sb.clone();
         sb.name = name.to_string();
-        if sb.marker_topic.is_empty() {
-            sb.marker_topic = DEFAULT_MARKER_TOPIC.to_string();
+        if sb.marker.is_empty() {
+            sb.marker = DEFAULT_MARKER.to_string();
         }
-        // Forges store topics lowercased; a marker that is not would never match what they
-        // hold, and every repository would then fail the ownership guard.
-        sb.marker_topic = sb.marker_topic.trim().to_lowercase();
-        if !is_marker_topic(&sb.marker_topic) {
+        // One spelling, so that the marker a run writes is the one every later run looks for,
+        // whatever the case it was typed in.
+        sb.marker = sb.marker.trim().to_lowercase();
+        if !is_marker(&sb.marker) {
             return Err(CommandError::Other(format!(
-                "sandbox {name:?}: marker_topic {:?}: use lowercase letters, digits, '.' and '-', 50 characters at most",
-                sb.marker_topic
+                "sandbox {name:?}: marker {:?}: use lowercase letters, digits, '.' and '-', 50 characters at most",
+                sb.marker
             )));
         }
         // Only a self-hosted GitHub or GitLab needs to say where it lives.
@@ -249,8 +249,8 @@ sandboxes:
   noproj:  {forge: azuredevops, org: acme, token_env: T}
   oldproj: {forge: azuredevops, org: acme, project: sandbox, token_env: T}
   ghproj:  {forge: github,      org: acme-sandbox, default_project: fleet, token_env: T}
-  upper:   {forge: github,      org: acme-sandbox, token_env: T, marker_topic: \" Forgelab-Managed \"}
-  badmark: {forge: github,      org: acme-sandbox, token_env: T, marker_topic: \"a b\"}
+  upper:   {forge: github,      org: acme-sandbox, token_env: T, marker: \" Forgelab-Managed \"}
+  badmark: {forge: github,      org: acme-sandbox, token_env: T, marker: \"a b\"}
   paced:   {forge: github,      org: acme-sandbox, token_env: T, concurrency: 2}
   quick:   {forge: github,      org: acme-sandbox, token_env: T, write_interval: 0.5}
   glquick: {forge: gitlab,      org: acme-sandbox, token_env: T, write_interval: 0.5}
@@ -264,7 +264,7 @@ sandboxes:
         std::fs::write(&path, TEST_CONFIG).unwrap();
         let cfg = load_config(&path).unwrap();
 
-        // Hosted forges know where they live; the marker topic has a default.
+        // Hosted forges know where they live; the marker has a default.
         for (name, base_url, org) in [
             ("gh", "https://github.com", "acme-sandbox"),
             ("gl", "https://gitlab.com", "acme-sandbox/services"),
@@ -273,12 +273,8 @@ sandboxes:
         ] {
             let sb = cfg.sandbox(name).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(
-                (
-                    sb.base_url.as_str(),
-                    sb.org.as_str(),
-                    sb.marker_topic.as_str()
-                ),
-                (base_url, org, DEFAULT_MARKER_TOPIC),
+                (sb.base_url.as_str(), sb.org.as_str(), sb.marker.as_str()),
+                (base_url, org, DEFAULT_MARKER),
                 "{name}"
             );
         }
@@ -295,11 +291,8 @@ sandboxes:
         // The key was renamed; a config still using the old one is told, not silently ignored.
         let err = cfg.sandbox("oldproj").unwrap_err().to_string();
         assert!(err.contains("default_project"), "{err}");
-        // A marker is stored lowercase by every forge, so it is read that way.
-        assert_eq!(
-            cfg.sandbox("upper").unwrap().marker_topic,
-            "forgelab-managed"
-        );
+        // A marker has one spelling, whatever the case it was typed in.
+        assert_eq!(cfg.sandbox("upper").unwrap().marker, "forgelab-managed");
         assert_eq!(cfg.sandbox("paced").unwrap().concurrency, Some(2));
     }
 

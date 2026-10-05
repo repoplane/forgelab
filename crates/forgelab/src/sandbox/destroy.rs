@@ -5,7 +5,7 @@ use crate::forge::{NamespaceDepth, Removal};
 
 use super::Env;
 use super::pool::for_each_collect;
-use super::report::{CommandError, FailureReport, RepoFailure, aggregate};
+use super::report::{CommandError, FailureReport, RepoFailure};
 
 struct Target {
     name: String,
@@ -14,7 +14,7 @@ struct Target {
 }
 
 impl Env {
-    /// Deletes the declared repositories that carry the marker topic, and nothing else: not
+    /// Deletes the declared repositories that carry the marker, and nothing else: not
     /// undeclared repositories, not a same-named repository forgelab did not create, and not
     /// the organisation. The namespaces they sat in go too, with whatever else is in them by
     /// then, but only those forgelab made: the marker means the same on a namespace as on a
@@ -26,42 +26,30 @@ impl Env {
         let spec = fleet::load_spec(self.root())?;
         let caps = self.forge.caps();
 
-        let targets: Vec<Target> = spec
-            .repos
-            .iter()
-            .map(|r| Target {
-                name: r.name.clone(),
-                delete: false,
-                skip: String::new(),
+        let names: Vec<String> = spec.repos.iter().map(|r| r.name.clone()).collect();
+        let found = self.lookup_confirmed(&names).await?;
+        let targets: Vec<Target> = names
+            .into_iter()
+            .zip(found)
+            .map(|(name, live)| {
+                let mut t = Target {
+                    name,
+                    delete: false,
+                    skip: String::new(),
+                };
+                if let Some(live) = live {
+                    if !self.is_ours(&live) {
+                        t.skip = format!(
+                            "has no {:?} marker in its description, so it is not forgelab's",
+                            self.sandbox.marker
+                        );
+                    } else {
+                        t.delete = true;
+                    }
+                }
+                t
             })
             .collect();
-        let results = for_each_collect(
-            targets,
-            self.concurrency,
-            &self.cancel,
-            |mut t| async move {
-                let r = match self.get_confirmed(&t.name).await {
-                    Err(e) => Err(e),
-                    Ok(None) => Ok(()),
-                    Ok(Some(live)) => {
-                        if caps.topics
-                            && !live.topics.iter().any(|x| x == &self.sandbox.marker_topic)
-                        {
-                            t.skip = format!(
-                                "has no {:?} topic, so it is not forgelab's",
-                                self.sandbox.marker_topic
-                            );
-                        } else {
-                            t.delete = true;
-                        }
-                        Ok(())
-                    }
-                };
-                (t, r)
-            },
-        )
-        .await;
-        let targets = aggregate(results, |t| &t.name)?;
 
         self.header("DESTROY", targets.len());
         let mut doomed: Vec<Target> = Vec::new();
@@ -105,12 +93,14 @@ impl Env {
         }
 
         let total = doomed.len();
+        self.progress.phase("delete", doomed.len());
         let results = for_each_collect(doomed, self.concurrency, &self.cancel, |t| async move {
             let r = self
                 .forge
                 .delete(&t.name)
                 .await
                 .map_err(|e| CommandError::Other(format!("delete {}: {e}", t.name)));
+            self.progress.add(1);
             (t, r)
         })
         .await;

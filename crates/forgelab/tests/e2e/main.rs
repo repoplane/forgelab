@@ -280,6 +280,43 @@ async fn reset_cannot_create() {
     assert_eq!(exit_kind(&l.env().verify().await), "guard");
 }
 
+/// What a run killed right after a create leaves -- a repository with the marker in its
+/// description and nothing else: no topics, no commits -- is finished by the next apply, with
+/// the same lock as a run that was never interrupted.
+#[tokio::test]
+async fn an_interrupted_create_is_finished() {
+    if !e2e_enabled() {
+        return;
+    }
+    let mut l = Lab::new().await;
+    let org = format!("{}-killed", l.org());
+    l.set_org(&org);
+    l.must_api("POST", "/orgs", &format!(r#"{{"username":{org:?}}}"#))
+        .await;
+    l.must_api(
+        "POST",
+        &format!("/orgs/{org}/repos"),
+        &format!(
+            r#"{{"name":"compliant","auto_init":false,"description":{:?}}}"#,
+            forgelab::sandbox::DEFAULT_MARKER
+        ),
+    )
+    .await;
+    let lock_path = l.dir().join(fleet::LOCK_FILE);
+    let committed = std::fs::read(&lock_path).unwrap();
+
+    l.must_apply().await;
+    l.env()
+        .verify()
+        .await
+        .expect("verify after the finishing apply");
+    assert_eq!(
+        std::fs::read(&lock_path).unwrap(),
+        committed,
+        "the lock differs from an uninterrupted run's"
+    );
+}
+
 #[tokio::test]
 async fn guards() {
     if !e2e_enabled() {

@@ -129,6 +129,37 @@ pub fn github(resp: &http::Response<Bytes>) -> Classified {
     plain(Class::Forbidden)
 }
 
+/// GitHub's GraphQL endpoint: its HTTP-level limits read like the REST API's, and an exhausted
+/// GraphQL budget may also come back as a 200 whose only tell is an error of type
+/// `RATE_LIMITED` in the body. That is a pause until the reset, not an answer.
+pub fn github_graphql(resp: &http::Response<Bytes>) -> Classified {
+    let status = resp.status().as_u16();
+    if status == 200 {
+        let body = resp.body();
+        if body.windows(12).any(|w| w == b"RATE_LIMITED") {
+            let wait = resp
+                .headers()
+                .get("x-ratelimit-reset")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<i64>().ok())
+                .map(|reset| {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    Duration::from_secs((reset - now).max(1) as u64)
+                })
+                .unwrap_or(GITHUB_SECONDARY_WAIT);
+            return Classified {
+                class: Class::RateLimited,
+                retry_after: Some(wait),
+            };
+        }
+        return generic(resp);
+    }
+    github(resp)
+}
+
 /// GitLab: a 429, with `Retry-After` when it says.
 pub fn gitlab(resp: &http::Response<Bytes>) -> Classified {
     generic(resp)
