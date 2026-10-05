@@ -414,6 +414,14 @@ impl Env {
         {
             settings.default_branch = Some(want.default_branch.clone());
         }
+        // No settings are written until the forge has applied what this run pushed: see
+        // `wait_pushed`. Archiving is a settings write too.
+        if (settings != Settings::default() || want.archived)
+            && (c.create || c.push)
+            && let Some(b) = &c.built
+        {
+            self.wait_pushed(name, &want.default_branch, &b.sha).await?;
+        }
         if settings != Settings::default() {
             self.forge
                 .update_settings(name, settings)
