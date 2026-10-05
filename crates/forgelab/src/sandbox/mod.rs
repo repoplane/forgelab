@@ -43,6 +43,9 @@ pub struct Options {
     /// Skip the destroy confirmation.
     pub yes: bool,
     pub verbose: bool,
+    /// Print a progress line on stderr while a long phase runs. The CLI sets it; a library
+    /// caller has output of its own.
+    pub progress: bool,
     /// Overrides the sandbox's and the forge's concurrency.
     pub concurrency: Option<usize>,
     /// Default stdin.
@@ -65,6 +68,7 @@ impl Default for Options {
             sandbox: String::new(),
             yes: false,
             verbose: false,
+            progress: false,
             concurrency: None,
             input: None,
             out: None,
@@ -121,6 +125,7 @@ impl Env {
             Some(t) => t,
             None => Arc::new(forge::ReqwestTransport::new()?),
         };
+        let pauses = forge::Pauses::new();
         let forge: Arc<dyn Forge> = match sb.forge.as_str() {
             "forgejo" => Arc::new(
                 forge::forgejo::Client::new(
@@ -130,7 +135,8 @@ impl Env {
                     transport,
                     cancel.clone(),
                 )
-                .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?,
+                .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?
+                .with_pauses(pauses.clone()),
             ),
             "github" => {
                 let mut c = forge::github::Client::new(
@@ -144,11 +150,12 @@ impl Env {
                 if let Some(w) = sb.write_interval {
                     c = c.with_write_interval(std::time::Duration::from_secs_f64(w));
                 }
-                Arc::new(c)
+                Arc::new(c.with_pauses(pauses.clone()))
             }
             "gitlab" => Arc::new(
                 forge::gitlab::Client::new(&sb.base_url, &sb.org, token, transport, cancel.clone())
-                    .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?,
+                    .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?
+                    .with_pauses(pauses.clone()),
             ),
             "azuredevops" => Arc::new(
                 forge::azuredevops::Client::new(
@@ -159,7 +166,8 @@ impl Env {
                     transport,
                     cancel.clone(),
                 )
-                .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?,
+                .map_err(|e| CommandError::Other(format!("sandbox {:?}: {e}", sb.name)))?
+                .with_pauses(pauses.clone()),
             ),
             other => {
                 return Err(CommandError::Other(format!(
@@ -173,7 +181,7 @@ impl Env {
             .or(sb.concurrency)
             .unwrap_or_else(|| forge.policy().default_concurrency)
             .max(1);
-        let progress = progress::Progress::start(forge.name());
+        let progress = progress::Progress::start(forge.name(), pauses, o.progress);
         Ok(Env {
             sandbox: sb,
             forge,
@@ -333,6 +341,43 @@ impl Env {
         .await;
         let batches = aggregate(results, |b| b.names[0].as_str())?;
         Ok(batches.into_iter().flat_map(|b| b.found).collect())
+    }
+
+    /// Looks the repositories up ahead of a pass over them, where the forge can do that in
+    /// batches: one answer per name. Where it cannot, every answer is `None`, and each lookup
+    /// is left to the pass, as part of that repository's own step (`known_or_get`). A phase
+    /// waits for its slowest repository, so a lookup phase of one request per repository
+    /// saves nothing over asking inside the pass and adds a wait on the slowest lookup -- a
+    /// minute, when that one sat out a rate limit.
+    pub(crate) async fn prefetch(
+        &self,
+        names: &[String],
+        confirmed: bool,
+    ) -> Result<Vec<Option<Option<forge::Repo>>>, CommandError> {
+        if self.forge.batch_size() <= 1 {
+            return Ok(vec![None; names.len()]);
+        }
+        let found = if confirmed {
+            self.lookup_confirmed(names).await?
+        } else {
+            self.lookup(names).await?
+        };
+        Ok(found.into_iter().map(Some).collect())
+    }
+
+    /// The repository as `prefetch` found it, or looked up now if it was left to the pass;
+    /// `confirmed` as in `get_confirmed`.
+    pub(crate) async fn known_or_get(
+        &self,
+        name: &str,
+        prefetched: Option<Option<forge::Repo>>,
+        confirmed: bool,
+    ) -> Result<Option<forge::Repo>, CommandError> {
+        match prefetched {
+            Some(r) => Ok(r),
+            None if confirmed => self.get_confirmed(name).await,
+            None => Ok(self.forge.get(name).await?),
+        }
     }
 
     /// `lookup`, but no "missing" answer is believed at once: what is missing is asked again,

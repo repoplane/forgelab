@@ -89,6 +89,12 @@ impl Env {
             .await?;
         }
 
+        // No settings are written until the forge has applied the push above: see
+        // `wait_pushed`.
+        if s.refs_dirty && !want.empty {
+            self.wait_pushed(name, &want.default_branch, &want.baseline)
+                .await?;
+        }
         let mut settings = Settings {
             visibility: Some(want.visibility.clone()),
             ..Settings::default()

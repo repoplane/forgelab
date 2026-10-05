@@ -203,6 +203,7 @@ fn run(args: &[String]) -> i32 {
             sandbox: flags.sandbox,
             yes: flags.yes,
             verbose: flags.verbose,
+            progress: true,
             concurrency: flags.concurrency,
             cancel: Some(cancel.clone()),
             ..Options::default()

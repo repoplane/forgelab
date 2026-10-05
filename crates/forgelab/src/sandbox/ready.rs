@@ -86,6 +86,38 @@ impl Env {
     }
 }
 
+impl Env {
+    /// Waits until `name` reports `branch` at `sha`: before writing settings to a repository
+    /// this run has just pushed to. Forgejo takes a push in at once and applies it in the
+    /// background -- that is when a first push clears `is_empty` -- while every settings write
+    /// (`PATCH /repos/{owner}/{repo}`, archiving included) saves the whole repository row as it
+    /// was read when that request began. A settings write that lands in between puts
+    /// `is_empty` back: the repository then reads as empty for good, and no wait for its
+    /// branch ever ends.
+    pub(crate) async fn wait_pushed(
+        &self,
+        name: &str,
+        branch: &str,
+        sha: &str,
+    ) -> Result<(), CommandError> {
+        let want = LockRepo {
+            name: name.to_string(),
+            default_branch: branch.to_string(),
+            baseline: sha.to_string(),
+            ..LockRepo::default()
+        };
+        let forge: &dyn Forge = self.forge.as_ref();
+        wait_one(
+            forge,
+            &want,
+            READY_PER_REPO,
+            Instant::now() + READY_OVERALL,
+            &self.cancel,
+        )
+        .await
+    }
+}
+
 /// Blocks until `want` reports its baseline. It gives up on its own clock, or on the fleet's,
 /// and says which -- the two are different failures and want different answers.
 pub(crate) async fn wait_one<L: BranchLister + ?Sized>(

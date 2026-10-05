@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
 use super::error::ForgeError;
-use super::http::{Answer, HttpClient, RequestOpts, Transport};
+use super::http::{Answer, HttpClient, Pauses, RequestOpts, Transport};
 use super::keyed::KeyedOnce;
 use super::{
     Caps, Forge, ForgePolicy, GitAuth, GitRemote, NAMESPACE_MARKER, NamespaceDepth, Ref, Removal,
@@ -113,6 +113,12 @@ struct RawRef {
 }
 
 impl Client {
+    /// Reports every rate-limit pause to `pauses`, which the run's progress line reads.
+    pub fn with_pauses(mut self, pauses: Arc<Pauses>) -> Client {
+        self.http = self.http.with_pauses(pauses.clone());
+        self
+    }
+
     /// `base_url` is https://dev.azure.com, or a Server's collection root.
     pub fn new(
         base_url: &str,

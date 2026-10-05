@@ -66,48 +66,66 @@ impl Env {
                 .ensure_org()
                 .await
                 .map_err(|e| CommandError::Other(format!("org {}: {e}", self.sandbox.org)))?;
+            // Where the forge looks repositories up in batches, what was just created is read
+            // back all at once, in a second phase. Elsewhere each repository settles in the same
+            // step as its push: a phase waits for its slowest repository, and a second one
+            // would only add a wait on the slowest read-back.
+            let batched = self.forge.batch_size() > 1;
             self.progress.phase("apply", todo.len());
             let results =
                 for_each_collect(todo, self.concurrency, &self.cancel, |mut c| async move {
-                    let r = self.apply_one(&mut c).await;
+                    let mut r = self.apply_one(&mut c).await;
+                    if r.is_ok() && !batched {
+                        let current = if c.create {
+                            self.forge.get(&c.repo.name).await.ok().flatten()
+                        } else {
+                            c.live.clone()
+                        };
+                        r = self.settle_one(&c, current).await;
+                        if r.is_ok() {
+                            self.debugf(format!("  applied {}\n", c.repo.name));
+                        }
+                    }
                     self.progress.add(1);
                     (c, r)
                 })
                 .await;
             let todo = aggregate(results, |c| &c.repo.name)?;
 
-            // What the repositories just created look like now that they hold their seed: read
-            // back, all at once, rather than written blindly. Their visibility came with the
-            // create and their default branch with the first push, and on GitHub that saves one
-            // paced write in three.
-            let created: Vec<String> = todo
-                .iter()
-                .filter(|c| c.create)
-                .map(|c| c.repo.name.clone())
-                .collect();
-            let mut fresh: HashMap<String, forge::Repo> = HashMap::new();
-            for (name, r) in created.iter().zip(self.lookup(&created).await?) {
-                if let Some(r) = r {
-                    fresh.insert(name.clone(), r);
+            if batched {
+                // Read back rather than written blindly: a created repository's visibility came
+                // with the create and its default branch with the first push, and on GitHub that
+                // saves one paced write in three.
+                let created: Vec<String> = todo
+                    .iter()
+                    .filter(|c| c.create)
+                    .map(|c| c.repo.name.clone())
+                    .collect();
+                let mut fresh: HashMap<String, forge::Repo> = HashMap::new();
+                for (name, r) in created.iter().zip(self.lookup(&created).await?) {
+                    if let Some(r) = r {
+                        fresh.insert(name.clone(), r);
+                    }
                 }
+                let fresh = &fresh;
+                self.progress.phase("settle", todo.len());
+                let results =
+                    for_each_collect(todo, self.concurrency, &self.cancel, |c| async move {
+                        let current = if c.create {
+                            fresh.get(&c.repo.name).cloned()
+                        } else {
+                            c.live.clone()
+                        };
+                        let r = self.settle_one(&c, current).await;
+                        self.progress.add(1);
+                        if r.is_ok() {
+                            self.debugf(format!("  applied {}\n", c.repo.name));
+                        }
+                        (c, r)
+                    })
+                    .await;
+                aggregate(results, |c| &c.repo.name)?;
             }
-            let fresh = &fresh;
-            self.progress.phase("settle", todo.len());
-            let results = for_each_collect(todo, self.concurrency, &self.cancel, |c| async move {
-                let current = if c.create {
-                    fresh.get(&c.repo.name).cloned()
-                } else {
-                    c.live.clone()
-                };
-                let r = self.settle_one(&c, current).await;
-                self.progress.add(1);
-                if r.is_ok() {
-                    self.debugf(format!("  applied {}\n", c.repo.name));
-                }
-                (c, r)
-            })
-            .await;
-            aggregate(results, |c| &c.repo.name)?;
             let _ = todo_names;
         }
 
@@ -180,21 +198,26 @@ impl Env {
         let lock = Lock::new(&spec, &digest, &baselines);
 
         let names: Vec<String> = changes.iter().map(|c| c.repo.name.clone()).collect();
-        let found = self.lookup(&names).await?;
+        let found = self.prefetch(&names, false).await?;
         let previous = &previous;
+        self.progress.phase("compare", names.len());
         let results = for_each_collect(
             changes.into_iter().zip(found).collect(),
             self.concurrency,
             &self.cancel,
-            |(mut c, live)| async move {
-                let r = self.diff_one(&mut c, live, previous.as_ref()).await;
+            |(mut c, pre)| async move {
+                let r = match self.known_or_get(&c.repo.name, pre, false).await {
+                    Ok(live) => self.diff_one(&mut c, live, previous.as_ref()).await,
+                    Err(e) => Err(e),
+                };
+                self.progress.add(1);
                 ((c, None), r)
             },
         )
         .await;
         let changes = aggregate(results, |(c, _)| &c.repo.name)?
             .into_iter()
-            .map(|(c, _): (Change, Option<forge::Repo>)| c)
+            .map(|(c, _): (Change, Option<Option<forge::Repo>>)| c)
             .collect();
         Ok((lock, changes))
     }
@@ -390,6 +413,14 @@ impl Env {
                 .is_none_or(|l| l.default_branch != want.default_branch)
         {
             settings.default_branch = Some(want.default_branch.clone());
+        }
+        // No settings are written until the forge has applied what this run pushed: see
+        // `wait_pushed`. Archiving is a settings write too.
+        if (settings != Settings::default() || want.archived)
+            && (c.create || c.push)
+            && let Some(b) = &c.built
+        {
+            self.wait_pushed(name, &want.default_branch, &b.sha).await?;
         }
         if settings != Settings::default() {
             self.forge

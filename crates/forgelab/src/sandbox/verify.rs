@@ -89,9 +89,9 @@ impl Env {
     /// at a time where it does not -- then reads each one's refs with git ls-remote. No writes.
     pub(crate) async fn compare(&self, lock: &Lock) -> Result<Report, CommandError> {
         let names: Vec<String> = lock.repos.iter().map(|r| r.name.clone()).collect();
-        let found = self.lookup_confirmed(&names).await?;
+        let found = self.prefetch(&names, true).await?;
         self.progress.phase("check", names.len());
-        let states: Vec<(State, Option<forge::Repo>)> = lock
+        let states: Vec<(State, Option<Option<forge::Repo>>)> = lock
             .repos
             .iter()
             .zip(found)
@@ -109,8 +109,11 @@ impl Env {
             states,
             self.concurrency,
             &self.cancel,
-            |(mut s, live)| async move {
-                let r = self.compare_one(&mut s, live).await;
+            |(mut s, pre)| async move {
+                let r = match self.known_or_get(&s.want.name, pre, true).await {
+                    Ok(live) => self.compare_one(&mut s, live).await,
+                    Err(e) => Err(e),
+                };
                 self.progress.add(1);
                 ((s, None), r)
             },

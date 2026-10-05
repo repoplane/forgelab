@@ -10,8 +10,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
-use super::error::ForgeError;
-use super::http::{HttpClient, RequestOpts, Transport};
+use super::error::{Class, ForgeError};
+use super::http::{HttpClient, Pauses, RequestOpts, Transport};
 use super::{
     Caps, Forge, ForgePolicy, GitAuth, GitRemote, NamespaceDepth, Ref, Removal, Repo, Request,
     Settings, classify, escape_ref, flat_name, path_escape,
@@ -26,6 +26,12 @@ pub struct Client {
 }
 
 impl Client {
+    /// Reports every rate-limit pause to `pauses`, which the run's progress line reads.
+    pub fn with_pauses(mut self, pauses: Arc<Pauses>) -> Client {
+        self.http = self.http.with_pauses(pauses.clone());
+        self
+    }
+
     pub fn new(
         base_url: &str,
         org: &str,
@@ -212,26 +218,31 @@ impl Forge for Client {
         }
     }
 
+    /// Makes the organisation if it is not there. A create is not repeated blindly after a
+    /// transient failure, which may have landed: the organisation is asked for again first,
+    /// and only made again if it is still missing.
     async fn ensure_org(&self) -> Result<(), ForgeError> {
-        match self
-            .call(
-                Method::GET,
-                &format!("/orgs/{}", path_escape(&self.org)),
-                None,
-            )
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(e) if e.is_status(&[404]) => {
-                self.call(
-                    Method::POST,
-                    "/orgs",
-                    Some(&serde_json::json!({"username": self.org, "visibility": "public"})),
-                )
-                .await
+        let path = format!("/orgs/{}", path_escape(&self.org));
+        let body = serde_json::json!({"username": self.org, "visibility": "public"});
+        for attempt in 1..=5 {
+            match self.call(Method::GET, &path, None).await {
+                Ok(()) => return Ok(()),
+                Err(e) if e.is_status(&[404]) => {}
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
+            match self.call(Method::POST, "/orgs", Some(&body)).await {
+                Ok(()) => return Ok(()),
+                Err(e) if e.class() == Class::Transient && attempt < 5 => {
+                    tracing::debug!(
+                        org = self.org,
+                        attempt,
+                        "creating the organisation answered a transient failure, checking whether it landed: {e}"
+                    );
+                }
+                Err(e) => return Err(e),
+            }
         }
+        unreachable!("the loop returns on the last attempt")
     }
 
     async fn get(&self, name: &str) -> Result<Option<Repo>, ForgeError> {
@@ -708,5 +719,41 @@ mod tests {
             "http://forgejo.test/acme/platform-core-api.git"
         );
         assert_eq!(r.auth.as_ref().unwrap().username, "forgelab");
+    }
+
+    /// A transient failure on creating the organisation is not taken as final: the next look
+    /// finds it if it landed, and a missing one is made again.
+    #[tokio::test(start_paused = true)]
+    async fn ensure_org_checks_after_a_transient_failure() {
+        let posts = Arc::new(Mutex::new(0));
+        let p2 = posts.clone();
+        let t = ScriptedTransport::new(move |r| match (r.method().as_str(), r.uri().path()) {
+            ("GET", "/api/v1/orgs/acme") => {
+                if *p2.lock().unwrap() < 2 {
+                    ScriptedTransport::reply(404, "")
+                } else {
+                    ScriptedTransport::reply(200, "{}")
+                }
+            }
+            ("POST", "/api/v1/orgs") => {
+                let mut n = p2.lock().unwrap();
+                *n += 1;
+                // The first create fails before landing, the second lands but its answer is lost.
+                ScriptedTransport::reply(503, "")
+            }
+            _ => ScriptedTransport::reply(404, ""),
+        });
+        let c = client(t.clone());
+        c.ensure_org().await.unwrap();
+        assert_eq!(
+            t.seen(),
+            [
+                "GET /api/v1/orgs/acme",
+                "POST /api/v1/orgs",
+                "GET /api/v1/orgs/acme",
+                "POST /api/v1/orgs",
+                "GET /api/v1/orgs/acme",
+            ]
+        );
     }
 }
