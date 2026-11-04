@@ -233,6 +233,7 @@ impl Client {
                 Some(&body),
                 RequestOpts {
                     idempotent: Some(true), // a query writes nothing
+                    expect_body: true,
                     ..Default::default()
                 },
             )
@@ -633,6 +634,7 @@ impl Forge for Client {
     fn policy(&self) -> ForgePolicy {
         ForgePolicy {
             default_concurrency: 8,
+            git_concurrency: 32,
             namespace_gone_timeout: Duration::from_secs(300),
         }
     }

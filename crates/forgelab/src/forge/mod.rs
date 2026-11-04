@@ -131,6 +131,10 @@ pub enum Removal {
 pub struct ForgePolicy {
     /// Repositories worked on at once.
     pub default_concurrency: usize,
+    /// git commands run at once while checking repositories (`ls-remote`), when no concurrency
+    /// was asked for. git spends none of the API's budget, and each command mostly waits on
+    /// the network, so many run at once where API calls keep to `default_concurrency`.
+    pub git_concurrency: usize,
     /// How long to wait for a namespace the forge deletes in the background to be gone.
     pub namespace_gone_timeout: Duration,
 }

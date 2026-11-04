@@ -72,6 +72,14 @@ impl Report {
 }
 
 impl Env {
+    /// One of the `concurrency` slots API calls share while git runs wider.
+    async fn api_slot(&self) -> tokio::sync::SemaphorePermit<'_> {
+        self.api
+            .acquire()
+            .await
+            .expect("the API semaphore is never closed")
+    }
+
     /// Asserts the sandbox matches the lock. Read-only.
     pub async fn verify(&self) -> Result<(), CommandError> {
         let lock = self.load_lock()?;
@@ -105,12 +113,21 @@ impl Env {
                 )
             })
             .collect();
+        // As many at once as git may run; the API calls among them wait for one of
+        // `concurrency` slots.
         let results = for_each_collect(
             states,
-            self.concurrency,
+            self.git_concurrency,
             &self.cancel,
             |(mut s, pre)| async move {
-                let r = match self.known_or_get(&s.want.name, pre, true).await {
+                let live = match pre {
+                    Some(found) => Ok(found),
+                    None => {
+                        let _slot = self.api_slot().await;
+                        self.known_or_get(&s.want.name, None, true).await
+                    }
+                };
+                let r = match live {
                     Ok(live) => self.compare_one(&mut s, live).await,
                     Err(e) => Err(e),
                 };
@@ -259,7 +276,10 @@ impl Env {
 
         s.requests = match live.open_requests.take() {
             Some(r) => r,
-            None => self.forge.open_requests(&want.name).await?,
+            None => {
+                let _slot = self.api_slot().await;
+                self.forge.open_requests(&want.name).await?
+            }
         };
         // Open, never "how many exist": request numbers are monotonic and closed requests are
         // permanent, so a count can never be reset.
