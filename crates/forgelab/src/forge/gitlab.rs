@@ -233,6 +233,7 @@ impl Client {
                 Some(&body),
                 RequestOpts {
                     idempotent: Some(true), // a query writes nothing
+                    expect_body: true,
                     ..Default::default()
                 },
             )

@@ -242,6 +242,11 @@ pub struct RequestOpts {
     pub idempotent: Option<bool>,
     /// Overrides the policy's budget.
     pub budget: Option<Duration>,
+    /// A 2xx with an empty (or `null`) body is not an answer but a failure that may pass, and
+    /// is retried like a 5xx when the request is idempotent. A GraphQL query always has a body;
+    /// GitHub answers one with an empty 200 now and then under load, and a lookup that took
+    /// that for "nothing found" would read a whole batch of repositories as missing.
+    pub expect_body: bool,
 }
 
 /// The client every forge shares.
@@ -439,6 +444,23 @@ impl HttpClient {
                 )
             {
                 let (parts, body) = resp.into_parts();
+                if opts.expect_body && (body.is_empty() || body.trim_ascii() == b"null") {
+                    let pause = self.backoff(attempt);
+                    if idempotent && Instant::now() + pause < deadline {
+                        tracing::debug!(forge = self.forge, %method, path, attempt, "empty answer, retrying");
+                        self.sleep(pause).await?;
+                        continue;
+                    }
+                    return Err(ForgeError::Status {
+                        class: Class::Transient,
+                        status,
+                        reason: reason(status),
+                        method: method.to_string(),
+                        path,
+                        body: "the forge answered with an empty body".into(),
+                        retry_after: None,
+                    });
+                }
                 return Ok(Answer {
                     status,
                     headers: parts.headers,
@@ -563,6 +585,53 @@ mod tests {
         assert_eq!(v.unwrap()["ok"], true);
         assert_eq!(t.seen().len(), 7);
         assert!(started.elapsed() >= Duration::from_secs(360));
+    }
+
+    /// GitHub, 2026-11-04: a GraphQL lookup answered 200 with an empty body right after a
+    /// secondary-limit pause, and the whole verify stopped on "graphql: empty answer".
+    #[tokio::test(start_paused = true)]
+    async fn an_empty_answer_to_a_query_is_retried() {
+        let n = Arc::new(AtomicUsize::new(0));
+        let n2 = n.clone();
+        let t = ScriptedTransport::new(move |_| {
+            if n2.fetch_add(1, Ordering::SeqCst) < 2 {
+                ScriptedTransport::reply(200, "")
+            } else {
+                ScriptedTransport::reply(200, r#"{"data":{}}"#)
+            }
+        });
+        let c = client(t.clone(), super::super::classify::github_graphql);
+        let opts = RequestOpts {
+            idempotent: Some(true),
+            expect_body: true,
+            ..Default::default()
+        };
+        let (_, v): (_, Option<serde_json::Value>) = c
+            .json(
+                Method::POST,
+                "http://x/graphql",
+                Some(&serde_json::json!({})),
+                opts,
+            )
+            .await
+            .unwrap();
+        assert!(v.is_some());
+        assert_eq!(t.seen().len(), 3);
+
+        // Without expect_body an empty 200 stays what it was: no answer, at once.
+        let t = ScriptedTransport::new(|_| ScriptedTransport::reply(200, ""));
+        let c = client(t.clone(), super::super::classify::github);
+        let (_, v): (_, Option<serde_json::Value>) = c
+            .json(
+                Method::GET,
+                "http://x/api",
+                None::<&()>,
+                RequestOpts::default(),
+            )
+            .await
+            .unwrap();
+        assert!(v.is_none());
+        assert_eq!(t.seen().len(), 1);
     }
 
     #[tokio::test(start_paused = true)]
