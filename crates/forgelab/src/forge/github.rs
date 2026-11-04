@@ -34,9 +34,17 @@ pub struct Client {
     graphql: HttpClient,
 }
 
-/// Repositories named in one GraphQL query. Each costs a node and two small connections, far
-/// inside GitHub's per-query limits; fifty keeps a query well under its ten-second timeout.
-const GRAPHQL_BATCH: usize = 50;
+/// Repositories named in one GraphQL query. GitHub answers a query in 0.1 to 0.2 s of its own
+/// time per repository named, whatever the fields, and gives up on one past ten seconds with a
+/// 502. Measured on 2026-11-04 against the 2,016-repository load fleet:
+///
+/// | batch | seconds per query (two runs) |
+/// |---|---|
+/// | 50 | 9.2, then 11.0 and a 502 |
+/// | 25 | 4.2, 3.8 |
+///
+/// Twenty-five keeps every query well inside the timeout.
+const GRAPHQL_BATCH: usize = 25;
 
 impl Client {
     /// Reports every rate-limit pause to `pauses`, which the run's progress line reads.
@@ -1361,7 +1369,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn get_many_batches_by_fifty() {
+    async fn get_many_batches_by_twenty_five() {
         let (c, t) = serve(Box::new(|r| {
             let vars = body_json(r)["variables"].as_object().unwrap().clone();
             let data: serde_json::Map<String, serde_json::Value> = vars
@@ -1378,7 +1386,7 @@ mod tests {
         }));
         let names: Vec<String> = (0..120).map(|i| format!("svc-{i}")).collect();
         let got = c.get_many(&names).await.unwrap();
-        assert_eq!(t.seen().len(), 3, "120 names in batches of 50");
+        assert_eq!(t.seen().len(), 5, "120 names in batches of 25");
         assert!(got.iter().all(Option::is_some));
         assert_eq!(got[119].as_ref().unwrap().name, "svc-119");
     }
