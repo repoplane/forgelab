@@ -301,10 +301,6 @@ impl Env {
         &self,
         names: &[String],
     ) -> Result<Vec<Option<forge::Repo>>, CommandError> {
-        struct Batch {
-            names: Vec<String>,
-            found: Vec<Option<forge::Repo>>,
-        }
         self.progress.phase("look up", names.len());
         let batches: Vec<Batch> = names
             .chunks(self.forge.batch_size().max(1))
@@ -339,8 +335,8 @@ impl Env {
             },
         )
         .await;
-        let batches = aggregate(results, |b| b.names[0].as_str())?;
-        Ok(batches.into_iter().flat_map(|b| b.found).collect())
+        let found = aggregate(per_repository(results), |(_, n)| n.as_str())?;
+        Ok(found.into_iter().map(|(f, _)| f).collect())
     }
 
     /// Looks the repositories up ahead of a pass over them, where the forge can do that in
@@ -451,6 +447,45 @@ pub(crate) fn confirm_answer(line: &str) -> Result<(), CommandError> {
     }
 }
 
+/// A repository as a lookup found it (`None`: not there), with its name, and how it went.
+type Looked = ((Option<forge::Repo>, String), Result<(), CommandError>);
+
+/// Repositories looked up together in one request.
+struct Batch {
+    names: Vec<String>,
+    found: Vec<Option<forge::Repo>>,
+}
+
+/// A lookup's outcome per repository, not per batch: a failed batch is every repository in it
+/// not looked up. Named by its first repository only, a GitHub verify reported "2 of 41
+/// repositories failed" when 2 batches, up to 100 of 2,016 repositories, had (2026-11-04).
+fn per_repository(results: Vec<(Batch, Result<(), CommandError>)>) -> Vec<Looked> {
+    let mut out = Vec::new();
+    for (b, r) in results {
+        match r {
+            Ok(()) => out.extend(
+                b.found
+                    .into_iter()
+                    .zip(b.names)
+                    .map(|(f, n)| ((f, n), Ok(()))),
+            ),
+            Err(e) => {
+                let guard = matches!(e, CommandError::Guard(_));
+                let message = e.to_string();
+                out.extend(b.names.into_iter().map(|n| {
+                    let e = if guard {
+                        CommandError::Guard(message.clone())
+                    } else {
+                        CommandError::Other(message.clone())
+                    };
+                    ((None, n), Err(e))
+                }));
+            }
+        }
+    }
+    out
+}
+
 /// The forge's topics, sorted the way the lock holds them, for comparison.
 pub(crate) fn sorted(topics: &[String]) -> Vec<String> {
     let mut out = topics.to_vec();
@@ -473,6 +508,30 @@ mod tests {
             ("local\n", false),
         ] {
             assert_eq!(confirm_answer(input).is_ok(), want, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_batch_is_reported_for_every_repository_in_it() {
+        let batch = |names: &[&str]| Batch {
+            names: names.iter().map(|n| n.to_string()).collect(),
+            found: names.iter().map(|_| None).collect(),
+        };
+        let results = vec![
+            (batch(&["a", "b"]), Ok(())),
+            (
+                batch(&["c", "d", "e"]),
+                Err(CommandError::Other("graphql: empty answer".into())),
+            ),
+        ];
+        let err = report::aggregate(per_repository(results), |(_, n)| n.as_str()).unwrap_err();
+        let text = err.to_string();
+        assert!(text.starts_with("3 of 5 repositories failed:"), "{text}");
+        for n in ["c", "d", "e"] {
+            assert!(
+                text.contains(&format!("\n  {n}: graphql: empty answer")),
+                "{text}"
+            );
         }
     }
 
