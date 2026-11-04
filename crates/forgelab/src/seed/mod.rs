@@ -315,6 +315,15 @@ fn strs(a: &[&str]) -> Vec<String> {
 
 /// git failures that a second try tends to cure. Everything else is reported at once.
 fn is_transient_git_failure(stderr: &str) -> bool {
+    // What git prints for an HTTP failure depends on the command: "RPC failed; HTTP 503" from a
+    // push or a fetch, "The requested URL returned error: 503" from ls-remote's first request.
+    // Only the first was here, so an Azure DevOps 503 failed a whole verify (2026-10-06).
+    if let Some(rest) = stderr.split("returned error: ").nth(1) {
+        let status: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if matches!(status.as_str(), "429" | "500" | "502" | "503" | "504") {
+            return true;
+        }
+    }
     const HINTS: &[&str] = &[
         "HTTP 500",
         "HTTP 502",
@@ -323,6 +332,10 @@ fn is_transient_git_failure(stderr: &str) -> bool {
         "HTTP 429",
         "Connection reset",
         "Connection refused",
+        // curl's words when the TCP connection never opened; 12 git checks of one GitHub
+        // verify failed together this way, 56.7 s in (2026-11-04).
+        "Couldn't connect to server",
+        "Failed to connect to",
         "Could not resolve host",
         "early EOF",
         "RPC failed",
@@ -344,11 +357,14 @@ async fn git_network(
     secrets: &[String],
     args: &[String],
 ) -> Result<String, SeedError> {
+    // Five attempts, 15 s of pauses in all: Azure DevOps answers 503 in waves of several
+    // seconds, which three attempts over 3 s did not outlast.
+    const ATTEMPTS: u32 = 5;
     let mut wait = Duration::from_secs(1);
-    for attempt in 1..=3 {
+    for attempt in 1..=ATTEMPTS {
         match git(dir, env, secrets, args).await {
             Ok(out) => return Ok(out),
-            Err(SeedError::Git(msg)) if attempt < 3 && is_transient_git_failure(&msg) => {
+            Err(SeedError::Git(msg)) if attempt < ATTEMPTS && is_transient_git_failure(&msg) => {
                 tracing::debug!(attempt, "git: transient failure, retrying: {msg}");
                 tokio::time::sleep(wait).await;
                 wait *= 2;
@@ -499,6 +515,30 @@ pub type FixtureDir = PathBuf;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_http_failure_is_transient_however_git_words_it() {
+        // ls-remote against Azure DevOps, 2026-10-06.
+        assert!(is_transient_git_failure(
+            "fatal: unable to access 'https://dev.azure.com/o/p/_git/r/': The requested URL returned error: 503"
+        ));
+        assert!(is_transient_git_failure(
+            "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502"
+        ));
+        assert!(is_transient_git_failure(
+            "fatal: unable to access 'https://x/r/': The requested URL returned error: 429"
+        ));
+        assert!(is_transient_git_failure(
+            "fatal: unable to access 'https://github.com/o/r.git/': Failed to connect to github.com port 443 after 56731 ms: Couldn't connect to server"
+        ));
+        // A refusal or a missing repository is not going to pass.
+        assert!(!is_transient_git_failure(
+            "fatal: unable to access 'https://x/r/': The requested URL returned error: 403"
+        ));
+        assert!(!is_transient_git_failure(
+            "fatal: repository 'https://x/r/' not found"
+        ));
+    }
     use crate::fleet::{Author, GitIdentity, Repo};
 
     fn identity() -> GitIdentity {
