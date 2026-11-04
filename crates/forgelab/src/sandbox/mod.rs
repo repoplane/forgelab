@@ -86,6 +86,10 @@ pub struct Env {
     pub fleet_dir: PathBuf,
     /// Repositories worked on at once.
     pub concurrency: usize,
+    /// git commands run at once while checking repositories; the API calls among them still
+    /// keep to `concurrency`, through `api`.
+    pub git_concurrency: usize,
+    pub(crate) api: Arc<tokio::sync::Semaphore>,
     pub cancel: CancellationToken,
     /// Where the current phase is, for the line printed while a long one runs.
     pub(crate) progress: Arc<progress::Progress>,
@@ -176,11 +180,15 @@ impl Env {
                 )));
             }
         };
-        let concurrency = o
-            .concurrency
-            .or(sb.concurrency)
+        // A concurrency asked for (flag or sandbox) paces everything, git included: it is how a
+        // sandbox is slowed down. Otherwise git runs at the forge's own, higher, pace.
+        let asked = o.concurrency.or(sb.concurrency);
+        let concurrency = asked
             .unwrap_or_else(|| forge.policy().default_concurrency)
             .max(1);
+        let git_concurrency = asked
+            .unwrap_or_else(|| forge.policy().git_concurrency)
+            .max(concurrency);
         let progress = progress::Progress::start(forge.name(), pauses, o.progress);
         Ok(Env {
             sandbox: sb,
@@ -188,6 +196,8 @@ impl Env {
             progress,
             fleet_dir,
             concurrency,
+            git_concurrency,
+            api: Arc::new(tokio::sync::Semaphore::new(concurrency)),
             cancel,
             yes: o.yes,
             verbose: o.verbose,
