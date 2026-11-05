@@ -815,6 +815,7 @@ impl Forge for Client {
                 username: "x-access-token".into(),
                 secret: self.token.clone(),
             }),
+            pace: None,
         })
     }
 }

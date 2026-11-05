@@ -947,6 +947,7 @@ impl Forge for Client {
                 username: "forgelab".into(),
                 secret: self.token.clone(),
             }),
+            pace: None,
         })
     }
 }
