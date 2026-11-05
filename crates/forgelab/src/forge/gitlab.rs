@@ -20,10 +20,17 @@ use super::{
     Caps, Forge, ForgePolicy, GitAuth, GitRemote, NAMESPACE_MARKER, NamespaceDepth, Ref, Removal,
     Repo, Request, Settings, classify, path_escape, query_escape, split_namespace,
 };
+use crate::seed::GitPace;
 use crate::util::go_duration;
 
 /// Used when a sandbox names no base_url.
 pub const DEFAULT_BASE_URL: &str = "https://gitlab.com";
+
+/// git commands a minute to gitlab.com. Its Free plan allows 100 git requests over HTTPS a
+/// minute, shared by everything the account does, and enforces it since November 2026: 8 of a
+/// 108-repository verify answered 429. An ls-remote or a push is two requests, a shallow fetch
+/// up to three. A self-managed GitLab sets its own limits, off by default, and is not paced.
+const GITLAB_COM_GIT_PER_MINUTE: u32 = 40;
 
 /// GitLab's access level 40. It is who may push and merge under the rule `allow_force_push`
 /// installs: the same audience the group's own default names, so the rule changes only
@@ -47,6 +54,8 @@ pub struct Client {
     /// and workers on other namespaces do not wait for it.
     groups: KeyedOnce<String, GroupInfo>,
     cancel: CancellationToken,
+    /// Shared by every git command this client's remotes run; gitlab.com only.
+    git_pace: Option<Arc<GitPace>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -112,6 +121,9 @@ impl Client {
         headers.insert("private-token", auth);
         let http = HttpClient::new("GitLab", transport, classify::gitlab, headers)
             .with_cancel(cancel.clone());
+        let gitlab_com = url::Url::parse(base_url)
+            .ok()
+            .is_some_and(|u| u.host_str() == Some("gitlab.com"));
         Ok(Client {
             base_url: base_url.trim_end_matches('/').to_string(),
             group: group.trim_matches('/').to_string(),
@@ -119,6 +131,7 @@ impl Client {
             http,
             groups: KeyedOnce::default(),
             cancel,
+            git_pace: gitlab_com.then(|| GitPace::per_minute(GITLAB_COM_GIT_PER_MINUTE)),
         })
     }
 
@@ -1020,6 +1033,7 @@ impl Forge for Client {
                 username: "oauth2".into(),
                 secret: self.token.clone(),
             }),
+            pace: self.git_pace.clone(),
         })
     }
 }
@@ -1469,6 +1483,36 @@ mod tests {
         let auth = remote.auth.unwrap();
         assert_eq!(auth.username, "oauth2");
         assert_eq!(auth.secret.expose_secret(), "s3cret");
+    }
+
+    /// gitlab.com caps git per minute and every remote of one client shares a pace; a
+    /// self-managed GitLab is not paced.
+    #[test]
+    fn git_is_paced_on_gitlab_com_only() {
+        let client = |base: &str| {
+            Client::new(
+                base,
+                "acme-sandbox",
+                "s3cret".to_string().into(),
+                ScriptedTransport::new(|_| ScriptedTransport::reply(500, "")),
+                CancellationToken::new(),
+            )
+            .unwrap()
+        };
+        for base in ["", "https://gitlab.com", "https://gitlab.com/"] {
+            let c = client(base);
+            let (a, b) = (c.git_remote("a").unwrap(), c.git_remote("b").unwrap());
+            assert!(
+                Arc::ptr_eq(a.pace.as_ref().unwrap(), b.pace.as_ref().unwrap()),
+                "{base:?}"
+            );
+        }
+        for base in ["https://gitlab.example.com", "http://gl.test"] {
+            assert!(
+                client(base).git_remote("a").unwrap().pace.is_none(),
+                "{base}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

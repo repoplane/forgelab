@@ -7,6 +7,7 @@ pub mod env;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use secrecy::{ExposeSecret as _, SecretString};
@@ -48,6 +49,39 @@ impl SeedError {
 pub struct GitRemote {
     pub url: url::Url,
     pub auth: Option<GitAuth>,
+    /// Set where the forge caps git traffic: every command to it then waits its turn.
+    pub pace: Option<Arc<GitPace>>,
+}
+
+/// Spaces the git commands sent to a forge that caps git traffic per minute, so that a run
+/// stays under the cap instead of discovering it. One is shared by everything a forge client
+/// sends, whatever the concurrency.
+#[derive(Debug)]
+pub struct GitPace {
+    next: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+    interval: Duration,
+}
+
+impl GitPace {
+    pub fn per_minute(commands: u32) -> Arc<GitPace> {
+        Arc::new(GitPace {
+            next: tokio::sync::Mutex::new(None),
+            interval: Duration::from_secs(60) / commands.max(1),
+        })
+    }
+
+    /// Waits until this command may start. The lock is held only to take a slot, not while
+    /// waiting for it.
+    async fn turn(&self) {
+        let at = {
+            let mut next = self.next.lock().await;
+            let now = tokio::time::Instant::now();
+            let at = next.map_or(now, |n| n.max(now));
+            *next = Some(at + self.interval);
+            at
+        };
+        tokio::time::sleep_until(at).await;
+    }
 }
 
 /// A username and secret that a forge accepts as Basic authentication over HTTP.
@@ -163,7 +197,7 @@ impl Built {
             &format!("refs/heads/{}", self.branch),
             "--tags",
         ]);
-        git_network(self.dir.path(), &env, &remote.secrets(), &args)
+        git_network(self.dir.path(), &env, remote, &args)
             .await
             .map(drop)
     }
@@ -199,7 +233,7 @@ pub async fn reset_to_baseline(
     git_network(
         work.path(),
         &env,
-        &remote.secrets(),
+        remote,
         &strs(&[
             "fetch",
             "-q",
@@ -209,7 +243,7 @@ pub async fn reset_to_baseline(
         ]),
     )
     .await?;
-    git_network(work.path(), &env, &remote.secrets(), &push).await?;
+    git_network(work.path(), &env, remote, &push).await?;
     Ok(())
 }
 
@@ -226,7 +260,7 @@ pub async fn delete_remote_refs(remote: &GitRemote, refs: &[String]) -> Result<(
         push.push(format!(":{r}"));
     }
     git(work.path(), &env, &[], &strs(&["init", "-q", "--bare"])).await?;
-    git_network(work.path(), &env, &remote.secrets(), &push)
+    git_network(work.path(), &env, remote, &push)
         .await
         .map(drop)
 }
@@ -246,7 +280,7 @@ pub async fn ls_remote(
     let out = git_network(
         work.path(),
         &env,
-        &remote.secrets(),
+        remote,
         &strs(&["ls-remote", "--heads", "--tags", remote.url.as_str()]),
     )
     .await?;
@@ -313,16 +347,34 @@ fn strs(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }
 
+/// The HTTP status in git's "The requested URL returned error: 503".
+fn http_status(stderr: &str) -> Option<&str> {
+    let rest = stderr.split("returned error: ").nth(1)?;
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// A forge's rate limit, which is counted per minute: retrying within seconds only spends the
+/// next attempt inside the same window.
+fn is_rate_limited(stderr: &str) -> bool {
+    http_status(stderr) == Some("429") || stderr.contains("HTTP 429")
+}
+
+/// How long to wait after a rate limit: the window it is counted over.
+const RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
+
 /// git failures that a second try tends to cure. Everything else is reported at once.
 fn is_transient_git_failure(stderr: &str) -> bool {
     // What git prints for an HTTP failure depends on the command: "RPC failed; HTTP 503" from a
     // push or a fetch, "The requested URL returned error: 503" from ls-remote's first request.
     // Only the first was here, so an Azure DevOps 503 failed a whole verify (2026-10-06).
-    if let Some(rest) = stderr.split("returned error: ").nth(1) {
-        let status: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if matches!(status.as_str(), "429" | "500" | "502" | "503" | "504") {
-            return true;
-        }
+    if matches!(
+        http_status(stderr),
+        Some("429" | "500" | "502" | "503" | "504")
+    ) {
+        return true;
     }
     const HINTS: &[&str] = &[
         "HTTP 500",
@@ -350,23 +402,34 @@ fn is_transient_git_failure(stderr: &str) -> bool {
     HINTS.iter().any(|h| stderr.contains(h))
 }
 
-/// Runs a git command that talks to a forge, retrying a transient failure a few times.
+/// Runs a git command that talks to a forge, at the remote's pace, retrying a transient
+/// failure a few times.
 async fn git_network(
     dir: &Path,
     env: &[(String, String)],
-    secrets: &[String],
+    remote: &GitRemote,
     args: &[String],
 ) -> Result<String, SeedError> {
     // Five attempts, 15 s of pauses in all: Azure DevOps answers 503 in waves of several
-    // seconds, which three attempts over 3 s did not outlast.
+    // seconds, which three attempts over 3 s did not outlast. A rate limit waits a whole
+    // window instead: gitlab.com's 429s outlasted the 15 s (2026-11-05).
     const ATTEMPTS: u32 = 5;
+    let secrets = remote.secrets();
     let mut wait = Duration::from_secs(1);
     for attempt in 1..=ATTEMPTS {
-        match git(dir, env, secrets, args).await {
+        if let Some(pace) = &remote.pace {
+            pace.turn().await;
+        }
+        match git(dir, env, &secrets, args).await {
             Ok(out) => return Ok(out),
             Err(SeedError::Git(msg)) if attempt < ATTEMPTS && is_transient_git_failure(&msg) => {
-                tracing::debug!(attempt, "git: transient failure, retrying: {msg}");
-                tokio::time::sleep(wait).await;
+                let pause = if is_rate_limited(&msg) {
+                    RATE_LIMIT_WAIT
+                } else {
+                    wait
+                };
+                tracing::debug!(attempt, ?pause, "git: transient failure, retrying: {msg}");
+                tokio::time::sleep(pause).await;
                 wait *= 2;
             }
             Err(e) => return Err(e),
@@ -539,6 +602,45 @@ mod tests {
             "fatal: repository 'https://x/r/' not found"
         ));
     }
+
+    /// A rate limit waits out its window; a busy forge only backs off.
+    #[test]
+    fn a_rate_limit_is_told_from_a_busy_forge() {
+        // gitlab.com, 2026-11-05.
+        assert!(is_rate_limited(
+            "remote: Rate limit exceeded; see https://docs.gitlab.com/user/gitlab_com/rate_limits/ for more details\nfatal: unable to access 'https://gitlab.com/g/r.git/': The requested URL returned error: 429"
+        ));
+        assert!(is_rate_limited("error: RPC failed; HTTP 429 curl 22"));
+        assert!(!is_rate_limited(
+            "fatal: unable to access 'https://x/r/': The requested URL returned error: 503"
+        ));
+        // A repository named for the status is not one.
+        assert!(!is_rate_limited(
+            "fatal: unable to access 'https://x/http-429-handler/': The requested URL returned error: 502"
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pace_spaces_commands_whatever_the_concurrency() {
+        let pace = GitPace::per_minute(60);
+        let start = tokio::time::Instant::now();
+        let mut started: Vec<Duration> = futures::future::join_all((0..4).map(|_| {
+            let pace = pace.clone();
+            async move {
+                pace.turn().await;
+                start.elapsed()
+            }
+        }))
+        .await;
+        started.sort();
+        let secs: Vec<u64> = started.iter().map(|d| d.as_secs()).collect();
+        assert_eq!(secs, [0, 1, 2, 3]);
+        // A pace that has been idle lets the next command start at once.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let before = tokio::time::Instant::now();
+        pace.turn().await;
+        assert_eq!(before.elapsed(), Duration::ZERO);
+    }
     use crate::fleet::{Author, GitIdentity, Repo};
 
     fn identity() -> GitIdentity {
@@ -646,6 +748,7 @@ mod tests {
                 username: "forgelab".into(),
                 secret: "tok".to_string().into(),
             }),
+            pace: None,
         };
         let env = env::git_env(None, Some(&remote));
         let get = |k: &str| {
